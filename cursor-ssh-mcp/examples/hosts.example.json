@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "hosts": {
+    "demo-vps": {
+      "id": "demo-vps",
+      "name": "Demo VPS",
+      "host": "203.0.113.10",
+      "port": 22,
+      "username": "ubuntu",
+      "privateKeyPath": "~/.ssh/id_ed25519",
+      "passphraseEnv": "",
+      "passwordEnv": "",
+      "defaultCwd": "/home/ubuntu",
+      "tags": ["demo"],
+      "createdAt": "2026-11-10T00:00:00.000Z",
+      "updatedAt": "2026-11-10T00:00:00.000Z"
+    }
+  }
+}

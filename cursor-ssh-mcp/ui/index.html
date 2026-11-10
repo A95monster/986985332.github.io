@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SSH — Cursor</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="host-pane">
+      <div class="pane-title">
+        <span>SSH Hosts</span>
+        <div class="title-actions">
+          <button id="btn-add" title="Add host">+</button>
+          <button id="btn-refresh" title="Refresh">↻</button>
+        </div>
+      </div>
+      <ul id="host-list"></ul>
+    </aside>
+
+    <div id="main-split">
+      <div id="work-area">
+        <div class="tabs">
+          <button class="tab active" data-tab="sftp">SFTP</button>
+          <button class="tab" data-tab="info">Session</button>
+        </div>
+        <section id="tab-sftp" class="tab-panel active">
+          <div id="sftp-split">
+            <div class="file-pane" id="local-pane">
+              <div class="file-toolbar">
+                <span>Local</span>
+                <input id="local-path" />
+                <button id="local-up">↑</button>
+                <button id="local-go">Go</button>
+              </div>
+              <ul id="local-list" class="file-list"></ul>
+            </div>
+            <div class="transfer-actions">
+              <button id="btn-upload" title="Upload selected local → remote">⇒</button>
+              <button id="btn-download" title="Download selected remote → local">⇐</button>
+            </div>
+            <div class="file-pane" id="remote-pane">
+              <div class="file-toolbar">
+                <span>Remote</span>
+                <input id="remote-path" />
+                <button id="remote-up">↑</button>
+                <button id="remote-go">Go</button>
+              </div>
+              <ul id="remote-list" class="file-list"></ul>
+            </div>
+          </div>
+        </section>
+        <section id="tab-info" class="tab-panel">
+          <pre id="session-info">Select a host (double-click to open terminal).</pre>
+        </section>
+      </div>
+
+      <div id="term-resize"></div>
+      <section id="term-pane">
+        <div class="pane-title">
+          <span id="term-title">Terminal</span>
+          <button id="btn-term-clear">Clear</button>
+        </div>
+        <div id="terminal"></div>
+      </section>
+    </div>
+  </div>
+
+  <dialog id="host-dialog">
+    <form method="dialog" id="host-form">
+      <h3 id="dialog-title">Host configuration</h3>
+      <label>ID <input name="id" required /></label>
+      <label>Name <input name="name" /></label>
+      <label>Host / IP <input name="host" required /></label>
+      <label>Port <input name="port" type="number" value="22" /></label>
+      <label>Username <input name="username" required /></label>
+      <label>Private key path <input name="privateKeyPath" placeholder="~/.ssh/id_ed25519" /></label>
+      <label>Password <input name="password" type="password" placeholder="stored locally in secrets.json" /></label>
+      <label>Key passphrase <input name="passphrase" type="password" /></label>
+      <label>Default cwd <input name="defaultCwd" /></label>
+      <div class="dialog-actions">
+        <button value="cancel" type="submit">Cancel</button>
+        <button id="btn-save-host" value="save" type="submit">Save</button>
+        <button id="btn-delete-host" type="button" class="danger">Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

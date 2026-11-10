@@ -1,0 +1,41 @@
+{
+  "name": "cursor-ssh-mcp",
+  "version": "1.0.0",
+  "description": "User-level Cursor MCP + Activity Bar SSH panel: saved hosts, key auth, SFTP, terminal",
+  "type": "module",
+  "bin": {
+    "cursor-ssh-mcp": "./src/index.js",
+    "cursor-ssh-mcp-ui": "./src/ui-cli.js"
+  },
+  "main": "./src/index.js",
+  "scripts": {
+    "start": "node ./src/index.js",
+    "ui": "node ./src/ui-cli.js",
+    "test:smoke": "node ./scripts/smoke-hosts.js",
+    "extension:package": "cd extension && npx --yes @vscode/vsce package --no-dependencies -o ../cursor-ssh-mcp.vsix"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "ssh2": "^1.16.0",
+    "ws": "^8.18.1",
+    "zod": "^3.24.2"
+  },
+  "files": [
+    "src",
+    "ui",
+    "extension",
+    "examples",
+    "README.md"
+  ],
+  "keywords": [
+    "cursor",
+    "mcp",
+    "ssh",
+    "termius",
+    "sftp"
+  ],
+  "license": "MIT"
+}

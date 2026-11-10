@@ -1,0 +1,74 @@
+{
+  "name": "cursor-ssh-mcp",
+  "displayName": "Cursor SSH (MCP)",
+  "description": "Resizable Activity Bar SSH panel (hosts, SFTP, terminal) backed by cursor-ssh-mcp shared config.",
+  "version": "1.0.0",
+  "publisher": "cursor-ssh-mcp",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:cursorSshMcp.panel",
+    "onCommand:cursorSshMcp.focusPanel",
+    "onCommand:cursorSshMcp.openExternal",
+    "onCommand:cursorSshMcp.restartUi"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cursor-ssh-mcp",
+          "title": "SSH",
+          "icon": "media/ssh.svg"
+        }
+      ]
+    },
+    "views": {
+      "cursor-ssh-mcp": [
+        {
+          "type": "webview",
+          "id": "cursorSshMcp.panel",
+          "name": "SSH",
+          "icon": "media/ssh.svg",
+          "retainContextWhenHidden": true
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "cursorSshMcp.focusPanel",
+        "title": "SSH: Focus Panel",
+        "category": "SSH"
+      },
+      {
+        "command": "cursorSshMcp.openExternal",
+        "title": "SSH: Open UI in Browser",
+        "category": "SSH"
+      },
+      {
+        "command": "cursorSshMcp.restartUi",
+        "title": "SSH: Restart UI Server",
+        "category": "SSH"
+      }
+    ],
+    "configuration": {
+      "title": "Cursor SSH MCP",
+      "properties": {
+        "cursorSshMcp.uiPort": {
+          "type": "number",
+          "default": 3847,
+          "description": "Local UI server port (must match CURSOR_SSH_MCP_UI_PORT if set for MCP)."
+        },
+        "cursorSshMcp.packageRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the cursor-ssh-mcp package root. Leave empty to use the sibling folder of this extension."
+        }
+      }
+    }
+  }
+}
