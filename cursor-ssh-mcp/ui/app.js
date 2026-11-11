@@ -1041,35 +1041,53 @@ function renderHosts() {
 }
 
 async function deleteHost(id, label) {
-  // Cursor / VS Code iframe 里 window.confirm 常被拦截或恒为 false，改用应用内对话框
-  const ok = await askConfirm({
-    title: "删除主机",
-    message: `确定删除主机「${label}」吗？此操作不可恢复。`,
-    okText: "删除",
-  });
-  if (!ok) return false;
+  const name = label || id;
+  // 已连接：先确认是否断开；未连接：直接删除（不弹「是否删除」）
+  if (sessionLooksActive(id)) {
+    const ok = await askConfirm({
+      title: "断开并删除",
+      message: `主机「${name}」当前已连接。断开连接并删除该主机吗？`,
+      okText: "断开并删除",
+    });
+    if (!ok) return false;
+  }
+
   try {
     disconnectHost(id);
     await api(`/api/hosts/${encodeURIComponent(id)}`, { method: "DELETE" });
+
     if (state.activeId === id) {
       state.activeId = null;
-      updateTermStatus({ status: "idle" });
+      if (state.panel !== "hosts") updateTermStatus({ status: "idle" });
     }
     ["left", "right"].forEach((side) => {
       const ep = state.endpoints[side];
       if (ep.kind === "host" && ep.hostId === id) {
-        state.endpoints[side] = side === "left" ? { kind: "local", hostId: null } : { kind: "host", hostId: null };
+        state.endpoints[side] =
+          side === "left" ? { kind: "local", hostId: null } : { kind: "host", hostId: null };
         state.paneSelected[side] = [];
       }
     });
-    renderSourceMenus();
-    refreshPane("left");
-    refreshPane("right");
-    updateActiveLabels();
     if (state.sessions[id]?.mount) {
-      state.sessions[id].mount.remove();
+      try {
+        state.sessions[id].mount.remove();
+      } catch {
+        /* ignore */
+      }
     }
     delete state.sessions[id];
+
+    if (state.panel !== "hosts") {
+      try {
+        renderSourceMenus();
+        updateActiveLabels();
+        await refreshPane("left");
+        await refreshPane("right");
+      } catch {
+        /* hosts-only 视图可跳过工作台刷新 */
+      }
+    }
+
     await refreshHosts();
     publish({ type: "hostsChanged" });
     return true;
@@ -2009,9 +2027,32 @@ async function transferFiles(fromSide, toSide, files) {
   }
 }
 
+/** 确保 dialog 挂在 body：hosts 面板会 display:none 掉 #work-row，祖先隐藏时 showModal 等于卡死 */
+function ensureDialogOnBody(dlg) {
+  if (!dlg) return null;
+  if (dlg.parentElement !== document.body) {
+    document.body.appendChild(dlg);
+  }
+  return dlg;
+}
+
+function openAppDialog(dlg) {
+  ensureDialogOnBody(dlg);
+  if (!dlg) throw new Error("dialog missing");
+  if (dlg.open) {
+    try {
+      dlg.close("cancel");
+    } catch {
+      /* ignore */
+    }
+  }
+  if (typeof dlg.showModal === "function") dlg.showModal();
+  else dlg.setAttribute("open", "");
+}
+
 function askText({ title = "输入", message = "", defaultValue = "", placeholder = "" } = {}) {
   return new Promise((resolve) => {
-    const dlg = $("app-prompt");
+    const dlg = ensureDialogOnBody($("app-prompt"));
     const form = $("app-prompt-form");
     const input = $("app-prompt-input");
     if (!dlg || !form || !input) {
@@ -2027,8 +2068,14 @@ function askText({ title = "输入", message = "", defaultValue = "", placeholde
       resolve(dlg.returnValue === "ok" ? input.value : null);
     };
     dlg.addEventListener("close", onClose);
-    if (typeof dlg.showModal === "function") dlg.showModal();
-    else dlg.setAttribute("open", "");
+    try {
+      openAppDialog(dlg);
+    } catch (err) {
+      dlg.removeEventListener("close", onClose);
+      console.error("askText showModal failed", err);
+      resolve(null);
+      return;
+    }
     setTimeout(() => {
       input.focus();
       input.select();
@@ -2038,7 +2085,7 @@ function askText({ title = "输入", message = "", defaultValue = "", placeholde
 
 function askConfirm({ title = "确认", message = "", okText = "确定" } = {}) {
   return new Promise((resolve) => {
-    const dlg = $("app-confirm");
+    const dlg = ensureDialogOnBody($("app-confirm"));
     const okBtn = $("app-confirm-ok");
     if (!dlg) {
       resolve(false);
@@ -2052,8 +2099,13 @@ function askConfirm({ title = "确认", message = "", okText = "确定" } = {}) 
       resolve(dlg.returnValue === "ok");
     };
     dlg.addEventListener("close", onClose);
-    if (typeof dlg.showModal === "function") dlg.showModal();
-    else dlg.setAttribute("open", "");
+    try {
+      openAppDialog(dlg);
+    } catch (err) {
+      dlg.removeEventListener("close", onClose);
+      console.error("askConfirm showModal failed", err);
+      resolve(false);
+    }
   });
 }
 
@@ -2080,7 +2132,7 @@ function uniqueSaveName(name, taken) {
  */
 function askConflict({ conflicts = [] } = {}) {
   return new Promise((resolve) => {
-    const dlg = $("app-conflict");
+    const dlg = ensureDialogOnBody($("app-conflict"));
     if (!dlg) {
       resolve("cancel");
       return;
@@ -2123,8 +2175,13 @@ function askConflict({ conflicts = [] } = {}) {
       else resolve("cancel");
     };
     dlg.addEventListener("close", onClose);
-    if (typeof dlg.showModal === "function") dlg.showModal();
-    else dlg.setAttribute("open", "");
+    try {
+      openAppDialog(dlg);
+    } catch (err) {
+      dlg.removeEventListener("close", onClose);
+      console.error("askConflict showModal failed", err);
+      resolve("cancel");
+    }
   });
 }
 
@@ -2201,7 +2258,7 @@ function showAlert({ title = "提示", message = "" } = {}) {
   lastAlertKey = key;
   lastAlertAt = now;
   return new Promise((resolve) => {
-    const dlg = $("app-alert");
+    const dlg = ensureDialogOnBody($("app-alert"));
     if (!dlg) {
       try {
         window.alert(message || title);
@@ -2218,8 +2275,13 @@ function showAlert({ title = "提示", message = "" } = {}) {
       resolve();
     };
     dlg.addEventListener("close", onClose);
-    if (typeof dlg.showModal === "function") dlg.showModal();
-    else dlg.setAttribute("open", "");
+    try {
+      openAppDialog(dlg);
+    } catch (err) {
+      dlg.removeEventListener("close", onClose);
+      console.error("showAlert showModal failed", err);
+      resolve();
+    }
   });
 }
 
@@ -3661,6 +3723,19 @@ function setupUtilRail() {
 }
 
 async function main() {
+  // 自动化测试钩子（仅测试脚本使用）
+  window.__sshMcpTest = {
+    sessionLooksActive,
+    forceOnline(id) {
+      applySessionStatus(id, "online", "");
+    },
+    forceIdle(id) {
+      applySessionStatus(id, "idle", "");
+    },
+    deleteHost,
+    askConfirm,
+  };
+
   setupPasteSupport();
   setupBus();
   setupDialog();

@@ -160,53 +160,6 @@
           <button type="button" data-ctx="chmod">修改权限</button>
         </div>
 
-        <dialog id="app-prompt" class="app-modal">
-          <form method="dialog" id="app-prompt-form" class="app-modal-form">
-            <h3 id="app-prompt-title">输入</h3>
-            <p id="app-prompt-message" class="app-modal-msg"></p>
-            <input id="app-prompt-input" type="text" autocomplete="off" />
-            <div class="dialog-actions-right app-modal-actions">
-              <button type="submit" value="ok" class="btn btn-primary" id="app-prompt-ok">确定</button>
-              <button type="submit" value="cancel" class="btn btn-ghost">取消</button>
-            </div>
-          </form>
-        </dialog>
-
-        <dialog id="app-confirm" class="app-modal">
-          <form method="dialog" id="app-confirm-form" class="app-modal-form">
-            <h3 id="app-confirm-title">确认</h3>
-            <p id="app-confirm-message" class="app-modal-msg"></p>
-            <div class="dialog-actions-right app-modal-actions">
-              <button type="submit" value="ok" class="btn btn-danger" id="app-confirm-ok">确定</button>
-              <button type="submit" value="cancel" class="btn btn-ghost">取消</button>
-            </div>
-          </form>
-        </dialog>
-
-        <dialog id="app-alert" class="app-modal">
-          <form method="dialog" id="app-alert-form" class="app-modal-form">
-            <h3 id="app-alert-title">提示</h3>
-            <p id="app-alert-message" class="app-modal-msg"></p>
-            <div class="dialog-actions-right app-modal-actions">
-              <button type="submit" value="ok" class="btn btn-primary" id="app-alert-ok">知道了</button>
-            </div>
-          </form>
-        </dialog>
-
-        <dialog id="app-conflict" class="app-modal app-modal-wide">
-          <form method="dialog" id="app-conflict-form" class="app-modal-form">
-            <h3 id="app-conflict-title">同名冲突</h3>
-            <p id="app-conflict-message" class="app-modal-msg"></p>
-            <ul id="app-conflict-list" class="conflict-list"></ul>
-            <p id="app-conflict-hint" class="app-modal-hint"></p>
-            <div class="dialog-actions-right app-modal-actions conflict-actions">
-              <button type="submit" value="replace" class="btn btn-danger" id="app-conflict-replace">替换</button>
-              <button type="submit" value="rename" class="btn btn-primary" id="app-conflict-rename">另存为序号</button>
-              <button type="submit" value="cancel" class="btn btn-ghost" id="app-conflict-cancel">取消</button>
-            </div>
-          </form>
-        </dialog>
-
         <div id="panel-resize" title="拖动调整面板高度">
           <button type="button" id="btn-swap-panes" class="btn-swap-panes" title="上下互换文件与终端位置">上下互换</button>
         </div>
@@ -255,6 +208,54 @@
       </aside>
     </div>
   </div>
+
+  <!-- 全局对话框必须挂在 body：hosts 面板会隐藏 #work-row，放里面会导致 showModal 后无法点击、Promise 永久挂起 -->
+  <dialog id="app-prompt" class="app-modal">
+    <form method="dialog" id="app-prompt-form" class="app-modal-form">
+      <h3 id="app-prompt-title">输入</h3>
+      <p id="app-prompt-message" class="app-modal-msg"></p>
+      <input id="app-prompt-input" type="text" autocomplete="off" />
+      <div class="dialog-actions-right app-modal-actions">
+        <button type="submit" value="ok" class="btn btn-primary" id="app-prompt-ok">确定</button>
+        <button type="submit" value="cancel" class="btn btn-ghost">取消</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="app-confirm" class="app-modal">
+    <form method="dialog" id="app-confirm-form" class="app-modal-form">
+      <h3 id="app-confirm-title">确认</h3>
+      <p id="app-confirm-message" class="app-modal-msg"></p>
+      <div class="dialog-actions-right app-modal-actions">
+        <button type="submit" value="ok" class="btn btn-danger" id="app-confirm-ok">确定</button>
+        <button type="submit" value="cancel" class="btn btn-ghost">取消</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="app-alert" class="app-modal">
+    <form method="dialog" id="app-alert-form" class="app-modal-form">
+      <h3 id="app-alert-title">提示</h3>
+      <p id="app-alert-message" class="app-modal-msg"></p>
+      <div class="dialog-actions-right app-modal-actions">
+        <button type="submit" value="ok" class="btn btn-primary" id="app-alert-ok">知道了</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="app-conflict" class="app-modal app-modal-wide">
+    <form method="dialog" id="app-conflict-form" class="app-modal-form">
+      <h3 id="app-conflict-title">同名冲突</h3>
+      <p id="app-conflict-message" class="app-modal-msg"></p>
+      <ul id="app-conflict-list" class="conflict-list"></ul>
+      <p id="app-conflict-hint" class="app-modal-hint"></p>
+      <div class="dialog-actions-right app-modal-actions conflict-actions">
+        <button type="submit" value="replace" class="btn btn-danger" id="app-conflict-replace">替换</button>
+        <button type="submit" value="rename" class="btn btn-primary" id="app-conflict-rename">另存为序号</button>
+        <button type="submit" value="cancel" class="btn btn-ghost" id="app-conflict-cancel">取消</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="host-dialog">
     <form method="dialog" id="host-form">

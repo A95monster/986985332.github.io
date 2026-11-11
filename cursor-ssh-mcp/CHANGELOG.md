@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 中文版：[CHANGELOG.zh-CN.md](./CHANGELOG.zh-CN.md)
 
+## [1.3.20] - 2026-11-11
+
+### Fixed
+- Delete-host freeze: move confirm/alert dialogs out of hidden `#work-row` onto `body` for hosts panel.
+- Delete flow: if connected, confirm disconnect-and-delete; if idle, delete immediately.
+
 ## [1.3.19] - 2026-11-11
 
 ### Fixed
