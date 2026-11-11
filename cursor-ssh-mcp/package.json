@@ -1,7 +1,7 @@
 {
   "name": "cursor-ssh-mcp",
-  "version": "1.1.0",
-  "description": "User-level Cursor MCP + Activity Bar SSH panel: saved hosts, key auth, SFTP, terminal",
+  "version": "1.3.0",
+  "description": "User-level Cursor MCP + Activity Bar hosts + editor SSH workbench: saved hosts, key auth, SFTP, terminal",
   "type": "module",
   "bin": {
     "cursor-ssh-mcp": "./src/index.js",

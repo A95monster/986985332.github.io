@@ -6,6 +6,20 @@ const STATUS = {
   error: { label: "异常", cls: "error" },
 };
 
+const SELECTED_HOST_KEY = "ssh-mcp-selected-host";
+const SYNC_CHANNEL = "ssh-mcp-host-sync";
+
+function resolvePanelMode() {
+  const raw = new URLSearchParams(location.search).get("panel") || "all";
+  if (raw === "hosts" || raw === "work" || raw === "all") return raw;
+  return "all";
+}
+
+const panelMode = resolvePanelMode();
+document.body.dataset.panel = panelMode;
+
+const STATUS_KEY = "ssh-mcp-session-status";
+
 const state = {
   hosts: [],
   activeId: null,
@@ -15,10 +29,17 @@ const state = {
   localSelected: null,
   remoteSelected: null,
   sessions: new Map(), // hostId -> { term, fit, ws, mountEl, status, onDataDisposable, onResizeDisposable }
+  remoteStatus: {}, // hostId -> status (from other panel)
   sftpVisible: true,
   termVisible: true,
   termHeightPx: null,
+  applyingRemoteSelect: false,
 };
+
+const syncChannel =
+  typeof BroadcastChannel !== "undefined"
+    ? new BroadcastChannel(SYNC_CHANNEL)
+    : null;
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -43,24 +64,65 @@ function escapeHtml(s) {
 
 function sessionStatus(id) {
   const session = state.sessions.get(id);
-  return session ? session.status : "idle";
+  if (session) return session.status;
+  return state.remoteStatus[id] || "idle";
 }
 
-function setSessionStatus(id, status) {
-  const session = state.sessions.get(id);
-  if (session) session.status = status;
-  renderHosts();
+function publishMessage(payload) {
+  if (syncChannel) {
+    try {
+      syncChannel.postMessage(payload);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function publishSelect(id, options) {
+  const payload = {
+    type: "selectHost",
+    id,
+    openFiles: Boolean(options.openFiles),
+    openTerm: Boolean(options.openTerm),
+    ts: Date.now(),
+  };
+  try {
+    localStorage.setItem(SELECTED_HOST_KEY, JSON.stringify(payload));
+  } catch {
+    /* ignore quota */
+  }
+  publishMessage(payload);
+}
+
+function publishStatus(id, status) {
+  state.remoteStatus[id] = status;
+  const map = { ...state.remoteStatus };
+  try {
+    localStorage.setItem(STATUS_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
+  publishMessage({ type: "sessionStatus", id, status, ts: Date.now() });
+}
+
+function publishDisconnect(id) {
+  publishMessage({ type: "disconnectHost", id, ts: Date.now() });
 }
 
 function renderHosts() {
   const ul = $("host-list");
+  if (!ul) return;
   ul.innerHTML = "";
   state.hosts.forEach((h) => {
     const st = STATUS[sessionStatus(h.id)] || STATUS.idle;
+    const connected = st.cls === "connected" || st.cls === "connecting";
     const li = document.createElement("li");
     li.className = "host-card" + (h.id === state.activeId ? " active" : "");
     li.dataset.id = h.id;
     const defaultMark = state.defaultId === h.id ? " · 默认" : "";
+    const disconnectBtn = connected
+      ? `<button type="button" data-action="disconnect">断开</button>`
+      : "";
     li.innerHTML = `
       <div class="host-card-top">
         <div class="name">${escapeHtml(h.name || h.id)}${defaultMark}</div>
@@ -71,12 +133,14 @@ function renderHosts() {
         <button type="button" data-action="files">文件</button>
         <button type="button" data-action="term" class="primary">终端</button>
         <button type="button" data-action="default">默认</button>
-        <button type="button" data-action="disconnect">断开</button>
+        <button type="button" data-action="edit">编辑</button>
+        <button type="button" data-action="delete" class="danger">删除</button>
+        ${disconnectBtn}
       </div>
     `;
     li.addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
-      selectHost(h.id, { openFiles: true, openTerm: false });
+      selectHost(h.id, { openFiles: true, openTerm: false, broadcast: true });
     });
     li.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -94,50 +158,93 @@ function renderHosts() {
 
 async function handleHostAction(id, action) {
   if (action === "files") {
-    showSftp(true);
-    await selectHost(id, { openFiles: true, openTerm: false });
+    if (panelMode !== "hosts") showSftp(true);
+    await selectHost(id, { openFiles: true, openTerm: false, broadcast: true });
     return;
   }
   if (action === "term") {
-    showTerm(true);
-    await selectHost(id, { openFiles: false, openTerm: true });
+    if (panelMode !== "hosts") showTerm(true);
+    await selectHost(id, { openFiles: false, openTerm: true, broadcast: true });
     return;
   }
   if (action === "default") {
     state.defaultId = id;
     localStorage.setItem("ssh-mcp-default-host", id);
-    showSftp(true);
-    showTerm(true);
-    await selectHost(id, { openFiles: true, openTerm: true });
+    if (panelMode !== "hosts") {
+      showSftp(true);
+      showTerm(true);
+    }
+    await selectHost(id, { openFiles: true, openTerm: true, broadcast: true });
+    return;
+  }
+  if (action === "edit") {
+    const host = state.hosts.find((h) => h.id === id);
+    openHostDialog(host || null);
+    return;
+  }
+  if (action === "delete") {
+    if (!confirm(`确定删除主机 ${id}？`)) return;
+    await deleteHost(id);
     return;
   }
   if (action === "disconnect") {
+    if (panelMode === "hosts") {
+      publishDisconnect(id);
+      state.remoteStatus[id] = "idle";
+      renderHosts();
+      return;
+    }
     disconnectSession(id);
-    if (state.activeId === id) {
+    if (state.activeId === id && $("remote-list")) {
       $("remote-list").innerHTML = "<li>已断开</li>";
       updateTermTitle();
     }
+    publishStatus(id, "idle");
     renderHosts();
   }
+}
+
+async function deleteHost(id) {
+  disconnectSession(id);
+  await api(`/api/hosts/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (state.activeId === id) state.activeId = null;
+  if (state.defaultId === id) {
+    state.defaultId = null;
+    localStorage.removeItem("ssh-mcp-default-host");
+  }
+  await refreshHosts();
 }
 
 async function refreshHosts() {
   const data = await api("/api/hosts");
   state.hosts = data.hosts || [];
-  if (!state.localPath || state.localPath === "/") {
-    state.localPath = data.home || "/";
-    $("local-path").value = state.localPath;
+  if (panelMode !== "hosts") {
+    if (!state.localPath || state.localPath === "/") {
+      state.localPath = data.home || "/";
+      if ($("local-path")) $("local-path").value = state.localPath;
+    }
   }
   renderHosts();
 }
 
-async function selectHost(id, { openFiles, openTerm }) {
+async function selectHost(id, { openFiles, openTerm, broadcast = false }) {
   state.activeId = id;
   renderHosts();
   const host = state.hosts.find((h) => h.id === id);
-  $("sftp-title").textContent = host
-    ? `文件传输 — ${host.name || host.id}`
-    : "文件传输";
+
+  if (broadcast && !state.applyingRemoteSelect) {
+    publishSelect(id, { openFiles, openTerm });
+  }
+
+  if (panelMode === "hosts") {
+    return;
+  }
+
+  if ($("sftp-title")) {
+    $("sftp-title").textContent = host
+      ? `文件传输 — ${host.name || host.id}`
+      : "文件传输";
+  }
   updateTermTitle();
 
   if (openFiles) {
@@ -199,6 +306,7 @@ function renderFileList(ul, entries, side) {
 }
 
 async function refreshLocal() {
+  if (!$("local-list")) return;
   const data = await api(`/api/local/list?path=${encodeURIComponent(state.localPath)}`);
   state.localPath = data.path;
   $("local-path").value = data.path;
@@ -206,7 +314,7 @@ async function refreshLocal() {
 }
 
 async function refreshRemote() {
-  if (!state.activeId) return;
+  if (!state.activeId || !$("remote-list")) return;
   const data = await api(
     `/api/remote/list?id=${encodeURIComponent(state.activeId)}&path=${encodeURIComponent(state.remotePath || ".")}`
   );
@@ -216,6 +324,7 @@ async function refreshRemote() {
 }
 
 function updateTermTitle() {
+  if (!$("term-title")) return;
   const host = state.hosts.find((h) => h.id === state.activeId);
   const session = state.activeId ? state.sessions.get(state.activeId) : null;
   if (!host) {
@@ -248,7 +357,6 @@ function ensureSession(id) {
     if (existing.ws && existing.ws.readyState <= WebSocket.OPEN) {
       return existing;
     }
-    // reconnect if socket died
     connectTerminalSocket(existing, id);
     return existing;
   }
@@ -316,6 +424,7 @@ function connectTerminalSocket(session, id) {
   }
 
   session.status = "connecting";
+  publishStatus(id, "connecting");
   renderHosts();
   updateTermTitle();
 
@@ -334,12 +443,14 @@ function connectTerminalSocket(session, id) {
     if (msg.type === "data") session.term.write(msg.data);
     if (msg.type === "error") {
       session.status = "error";
+      publishStatus(id, "error");
       session.term.writeln(`\r\n\x1b[31m${msg.message}\x1b[0m`);
       renderHosts();
       updateTermTitle();
     }
     if (msg.type === "ready") {
       session.status = "connected";
+      publishStatus(id, "connected");
       renderHosts();
       updateTermTitle();
       try {
@@ -363,12 +474,14 @@ function connectTerminalSocket(session, id) {
     if (session.status !== "idle") {
       session.status = session.status === "error" ? "error" : "idle";
     }
+    publishStatus(id, session.status);
     renderHosts();
     updateTermTitle();
   };
 
   ws.onerror = () => {
     session.status = "error";
+    publishStatus(id, "error");
     renderHosts();
     updateTermTitle();
   };
@@ -425,34 +538,38 @@ function disconnectSession(id) {
   }
   session.mountEl.remove();
   state.sessions.delete(id);
+  publishStatus(id, "idle");
   updateTermPlaceholder();
   if (state.activeId === id) showSessionMount(null);
 }
 
 function syncRestoreBar() {
   const bar = $("panel-restore");
+  if (!bar) return;
   const btnSftp = $("btn-restore-sftp");
   const btnTerm = $("btn-restore-term");
   const needBar = !state.sftpVisible || !state.termVisible;
   bar.classList.toggle("hidden", !needBar);
   btnSftp.classList.toggle("hidden", state.sftpVisible);
   btnTerm.classList.toggle("hidden", state.termVisible);
-  $("term-resize").style.display =
-    state.sftpVisible && state.termVisible ? "" : "none";
+  if ($("term-resize")) {
+    $("term-resize").style.display =
+      state.sftpVisible && state.termVisible ? "" : "none";
+  }
 }
 
 function showSftp(visible) {
+  if (!$("sftp-pane")) return;
   state.sftpVisible = visible;
   $("sftp-pane").classList.toggle("closed", !visible);
-  if (visible && !state.termVisible) {
-    $("sftp-pane").style.flex = "1";
-  } else if (visible && state.termVisible) {
+  if (visible) {
     $("sftp-pane").style.flex = "1";
   }
   syncRestoreBar();
 }
 
 function showTerm(visible) {
+  if (!$("term-pane")) return;
   state.termVisible = visible;
   $("term-pane").classList.toggle("closed", !visible);
   if (visible && state.termHeightPx) {
@@ -508,21 +625,15 @@ function setupDialog() {
     const id = $("host-form").id.value.trim();
     if (!id) return;
     if (!confirm(`确定删除主机 ${id}？`)) return;
-    disconnectSession(id);
-    await api(`/api/hosts/${encodeURIComponent(id)}`, { method: "DELETE" });
     $("host-dialog").close();
-    if (state.activeId === id) state.activeId = null;
-    if (state.defaultId === id) {
-      state.defaultId = null;
-      localStorage.removeItem("ssh-mcp-default-host");
-    }
-    await refreshHosts();
+    await deleteHost(id);
   });
 }
 
 function setupTermResize() {
   const handle = $("term-resize");
   const pane = $("term-pane");
+  if (!handle || !pane) return;
   let startY = 0;
   let startH = 0;
   handle.addEventListener("mousedown", (e) => {
@@ -553,6 +664,7 @@ function setupTermResize() {
 }
 
 function setupTransfers() {
+  if (!$("btn-upload")) return;
   $("btn-upload").addEventListener("click", async () => {
     if (!state.activeId || !state.localSelected || state.localSelected.type !== "file") {
       alert("请先选择一个本地文件");
@@ -630,39 +742,61 @@ function setupTransfers() {
 }
 
 function setupNav() {
-  $("btn-add").addEventListener("click", () => openHostDialog(null));
-  $("btn-refresh").addEventListener("click", () => refreshHosts());
-  $("local-go").addEventListener("click", async () => {
-    state.localPath = $("local-path").value;
-    await refreshLocal();
-  });
-  $("remote-go").addEventListener("click", async () => {
-    state.remotePath = $("remote-path").value;
-    await refreshRemote();
-  });
-  $("local-up").addEventListener("click", async () => {
-    const data = await api(`/api/local/list?path=${encodeURIComponent(state.localPath)}`);
-    state.localPath = data.parent;
-    $("local-path").value = state.localPath;
-    await refreshLocal();
-  });
-  $("remote-up").addEventListener("click", async () => {
-    if (!state.activeId) return;
-    const data = await api(
-      `/api/remote/list?id=${encodeURIComponent(state.activeId)}&path=${encodeURIComponent(state.remotePath)}`
-    );
-    state.remotePath = data.parent;
-    $("remote-path").value = state.remotePath;
-    await refreshRemote();
-  });
-  $("btn-term-clear").addEventListener("click", () => {
-    const session = state.activeId ? state.sessions.get(state.activeId) : null;
-    if (session) session.term.clear();
-  });
-  $("btn-close-sftp").addEventListener("click", () => showSftp(false));
-  $("btn-close-term").addEventListener("click", () => showTerm(false));
-  $("btn-restore-sftp").addEventListener("click", () => showSftp(true));
-  $("btn-restore-term").addEventListener("click", () => showTerm(true));
+  if ($("btn-add")) {
+    $("btn-add").addEventListener("click", () => openHostDialog(null));
+  }
+  if ($("btn-refresh")) {
+    $("btn-refresh").addEventListener("click", () => refreshHosts());
+  }
+  if ($("local-go")) {
+    $("local-go").addEventListener("click", async () => {
+      state.localPath = $("local-path").value;
+      await refreshLocal();
+    });
+  }
+  if ($("remote-go")) {
+    $("remote-go").addEventListener("click", async () => {
+      state.remotePath = $("remote-path").value;
+      await refreshRemote();
+    });
+  }
+  if ($("local-up")) {
+    $("local-up").addEventListener("click", async () => {
+      const data = await api(`/api/local/list?path=${encodeURIComponent(state.localPath)}`);
+      state.localPath = data.parent;
+      $("local-path").value = state.localPath;
+      await refreshLocal();
+    });
+  }
+  if ($("remote-up")) {
+    $("remote-up").addEventListener("click", async () => {
+      if (!state.activeId) return;
+      const data = await api(
+        `/api/remote/list?id=${encodeURIComponent(state.activeId)}&path=${encodeURIComponent(state.remotePath)}`
+      );
+      state.remotePath = data.parent;
+      $("remote-path").value = state.remotePath;
+      await refreshRemote();
+    });
+  }
+  if ($("btn-term-clear")) {
+    $("btn-term-clear").addEventListener("click", () => {
+      const session = state.activeId ? state.sessions.get(state.activeId) : null;
+      if (session) session.term.clear();
+    });
+  }
+  if ($("btn-close-sftp")) {
+    $("btn-close-sftp").addEventListener("click", () => showSftp(false));
+  }
+  if ($("btn-close-term")) {
+    $("btn-close-term").addEventListener("click", () => showTerm(false));
+  }
+  if ($("btn-restore-sftp")) {
+    $("btn-restore-sftp").addEventListener("click", () => showSftp(true));
+  }
+  if ($("btn-restore-term")) {
+    $("btn-restore-term").addEventListener("click", () => showTerm(true));
+  }
   window.addEventListener("resize", () => {
     for (const session of state.sessions.values()) {
       try {
@@ -674,18 +808,137 @@ function setupNav() {
   });
 }
 
+function setupHostSync() {
+  try {
+    state.remoteStatus = JSON.parse(localStorage.getItem(STATUS_KEY) || "{}") || {};
+  } catch {
+    state.remoteStatus = {};
+  }
+
+  const handlePayload = async (payload) => {
+    if (!payload || !payload.type) return;
+    if (payload.type === "sessionStatus" && payload.id) {
+      state.remoteStatus[payload.id] = payload.status || "idle";
+      renderHosts();
+      updateTermTitle();
+      return;
+    }
+    if (payload.type === "disconnectHost" && payload.id) {
+      if (panelMode === "hosts") {
+        state.remoteStatus[payload.id] = "idle";
+        renderHosts();
+        return;
+      }
+      disconnectSession(payload.id);
+      if (state.activeId === payload.id && $("remote-list")) {
+        $("remote-list").innerHTML = "<li>已断开</li>";
+      }
+      updateTermTitle();
+      renderHosts();
+      return;
+    }
+    if (payload.type !== "selectHost" || !payload.id) return;
+    if (panelMode === "hosts") {
+      state.activeId = payload.id;
+      renderHosts();
+      return;
+    }
+    state.applyingRemoteSelect = true;
+    try {
+      await selectHost(payload.id, {
+        openFiles: Boolean(payload.openFiles),
+        openTerm: Boolean(payload.openTerm),
+        broadcast: false,
+      });
+    } finally {
+      state.applyingRemoteSelect = false;
+    }
+  };
+
+  if (syncChannel) {
+    syncChannel.addEventListener("message", (ev) => {
+      handlePayload(ev.data).catch((err) => console.error(err));
+    });
+  }
+
+  window.addEventListener("storage", (ev) => {
+    if (ev.key === STATUS_KEY && ev.newValue) {
+      try {
+        state.remoteStatus = JSON.parse(ev.newValue) || {};
+        renderHosts();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    if (ev.key !== SELECTED_HOST_KEY || !ev.newValue) return;
+    try {
+      handlePayload(JSON.parse(ev.newValue)).catch((err) => console.error(err));
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
 async function main() {
   setupDialog();
-  setupTermResize();
-  setupTransfers();
+  setupHostSync();
   setupNav();
-  syncRestoreBar();
-  updateTermPlaceholder();
-  await refreshHosts();
-  await refreshLocal();
 
-  if (state.defaultId && state.hosts.some((h) => h.id === state.defaultId)) {
-    await selectHost(state.defaultId, { openFiles: true, openTerm: true });
+  if (panelMode !== "hosts") {
+    setupTermResize();
+    setupTransfers();
+    syncRestoreBar();
+    updateTermPlaceholder();
+  }
+
+  await refreshHosts();
+
+  if (panelMode !== "hosts") {
+    await refreshLocal();
+  }
+
+  // Restore last selection for work/all panels
+  if (panelMode !== "hosts") {
+    let restored = null;
+    try {
+      restored = JSON.parse(localStorage.getItem(SELECTED_HOST_KEY) || "null");
+    } catch {
+      restored = null;
+    }
+    if (restored?.id && state.hosts.some((h) => h.id === restored.id)) {
+      await selectHost(restored.id, {
+        openFiles: restored.openFiles !== false,
+        openTerm: Boolean(restored.openTerm),
+        broadcast: false,
+      });
+    } else if (
+      state.defaultId &&
+      state.hosts.some((h) => h.id === state.defaultId)
+    ) {
+      await selectHost(state.defaultId, {
+        openFiles: true,
+        openTerm: true,
+        broadcast: false,
+      });
+    }
+  } else {
+    let restored = null;
+    try {
+      restored = JSON.parse(localStorage.getItem(SELECTED_HOST_KEY) || "null");
+    } catch {
+      restored = null;
+    }
+    if (restored?.id && state.hosts.some((h) => h.id === restored.id)) {
+      state.activeId = restored.id;
+      renderHosts();
+    } else if (
+      state.defaultId &&
+      state.hosts.some((h) => h.id === state.defaultId)
+    ) {
+      state.activeId = state.defaultId;
+      renderHosts();
+    }
   }
 }
 

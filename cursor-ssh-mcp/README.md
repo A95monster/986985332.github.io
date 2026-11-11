@@ -7,7 +7,7 @@ Termius / IDEA 风格的 **user-level** SSH 工具：保存主机、密钥/密�
 | 组件 | 作用 |
 |------|------|
 | **MCP server** (`src/index.js`) | 给 Agent 调用的工具（`ssh_run`、`ssh_list_hosts` 等） |
-| **Cursor 扩展** (`extension/`) | 左侧 Activity Bar 的 **可拖拽、可折叠 SSH 面板**（与资源管理器 / Chat 侧栏同一交互模型） |
+| **Cursor 扩展** (`extension/`) | 左侧 Activity Bar **主机列表** + 中间编辑器 **SSH 工作台**（SFTP / 终端） |
 
 > **重要：** Cursor 的用户级 MCP 写在本机 `~/.cursor/mcp.json`，**不会**随 Cursor 账号在多台电脑间自动同步。Skills 可选择同步到 Cloud Agents；MCP 不会。Mac / Windows 需各自安装，配置可手工同步。
 
@@ -17,13 +17,15 @@ Termius / IDEA 风格的 **user-level** SSH 工具：保存主机、密钥/密�
 
 手机 / Cloud Agents 使用**另一套** MCP 注册表，看不到本机 stdio SSH MCP，除非另行发布可网络访问的 MCP。见 [Cursor for iOS](https://cursor.com/docs/cloud-agent/mobile)。
 
-## 面板交互（与 Cursor 现有侧栏一致）
+## 面板交互（v1.3.0：侧栏主机 + 编辑器工作台）
 
 1. 安装扩展后，左侧 Activity Bar 出现 **SSH** 图标。  
-2. 点击图标 → 打开 SSH 主侧栏（hosts / SFTP / 底部终端）。  
-3. **拖拽侧栏分隔条**即可调整宽度；再点图标或折叠主侧栏即可收起。  
-4. 命令面板：`SSH: Focus Panel` / `SSH: Open UI in Browser` / `SSH: Restart UI Server`。  
-5. UI 进程监听 `127.0.0.1:3847`（可用 `CURSOR_SSH_MCP_UI_PORT` / 设置 `cursorSshMcp.uiPort` 修改）。MCP 工具 `ssh_open_ui` 也会拉起同一服务。
+2. 点击图标 → 左侧只加载主机列表（`/?panel=hosts`），并自动打开中间编辑器 **SSH 工作台**（`/?panel=work`：SFTP + 终端）。  
+3. 主机卡片与工作台通过 `BroadcastChannel` + `localStorage` 同步当前选中主机。  
+4. **拖拽侧栏分隔条**即可调整宽度；再点图标或折叠主侧栏即可收起。  
+5. 命令面板：`SSH: Focus Panel` / `SSH: Open Workbench` / `SSH: Open UI in Browser` / `SSH: Restart UI Server`。  
+6. UI 进程监听 `127.0.0.1:3847`（可用 `CURSOR_SSH_MCP_UI_PORT` / 设置 `cursorSshMcp.uiPort` 修改）。MCP 工具 `ssh_open_ui` 也会拉起同一服务。  
+7. 浏览器可打开 `/?panel=all` 或预览页 `/preview-layout.html`（hosts | work 双 iframe）。
 
 主机与密钥材料默认存放：
 

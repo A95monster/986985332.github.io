@@ -5,6 +5,8 @@ const { spawn } = require("child_process");
 
 let uiProcess = null;
 let output = null;
+/** @type {vscode.WebviewPanel | null} */
+let workbenchPanel = null;
 
 function getOutput() {
   if (!output) {
@@ -30,8 +32,10 @@ function getUiPort() {
   );
 }
 
-function uiUrl(port) {
-  return `http://127.0.0.1:${port}/`;
+function uiUrl(port, panel) {
+  const base = `http://127.0.0.1:${port}/`;
+  if (!panel) return base;
+  return `${base}?panel=${encodeURIComponent(panel)}`;
 }
 
 function probeUi(port) {
@@ -59,7 +63,7 @@ function probeUi(port) {
 async function ensureUiServer(context) {
   const port = getUiPort();
   if (await probeUi(port)) {
-    return { port, url: uiUrl(port), alreadyRunning: true };
+    return { port, alreadyRunning: true };
   }
 
   const packageRoot = resolvePackageRoot(context);
@@ -98,7 +102,7 @@ async function ensureUiServer(context) {
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 150));
     if (await probeUi(port)) {
-      return { port, url: uiUrl(port), alreadyRunning: false };
+      return { port, alreadyRunning: false };
     }
   }
 
@@ -107,58 +111,32 @@ async function ensureUiServer(context) {
   );
 }
 
-class SshPanelProvider {
-  constructor(context) {
-    this.context = context;
-    this.view = null;
-  }
+function escapeHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
 
-  resolveWebviewView(webviewView) {
-    this.view = webviewView;
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [
-        vscode.Uri.file(path.join(this.context.extensionPath, "media")),
-      ],
-    };
-    webviewView.webview.html = this.loadingHtml("正在启动 SSH 面板…");
-    this.refresh().catch((err) => {
-      webviewView.webview.html = this.errorHtml(err);
-    });
-  }
-
-  async refresh() {
-    if (!this.view) return;
-    try {
-      const info = await ensureUiServer(this.context);
-      const external = await vscode.env.asExternalUri(
-        vscode.Uri.parse(info.url)
-      );
-      this.view.webview.html = this.frameHtml(external.toString());
-    } catch (err) {
-      this.view.webview.html = this.errorHtml(err);
-    }
-  }
-
-  loadingHtml(message) {
-    return `<!DOCTYPE html>
+function loadingHtml(message) {
+  return `<!DOCTYPE html>
 <html><body style="margin:0;background:#eef6f4;color:#16332e;font:13px 'PingFang SC',sans-serif;padding:16px;">
   ${escapeHtml(message)}
 </body></html>`;
-  }
+}
 
-  errorHtml(err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return `<!DOCTYPE html>
+function errorHtml(err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  return `<!DOCTYPE html>
 <html><body style="margin:0;background:#eef6f4;color:#9a3412;font:13px 'PingFang SC',sans-serif;padding:16px;white-space:pre-wrap;">
   <strong>SSH 面板启动失败</strong>
   <p>${escapeHtml(msg)}</p>
   <p>请在 cursor-ssh-mcp 目录执行 <code>npm install</code>，然后运行命令「SSH: Restart UI Server」。</p>
 </body></html>`;
-  }
+}
 
-  frameHtml(src) {
-    return `<!DOCTYPE html>
+function frameHtml(src) {
+  return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8" />
@@ -173,21 +151,97 @@ class SshPanelProvider {
   <iframe src="${src}" title="SSH" allow="clipboard-read; clipboard-write"></iframe>
 </body>
 </html>`;
+}
+
+async function resolveExternalUiUrl(context, panel) {
+  const info = await ensureUiServer(context);
+  const target = uiUrl(info.port, panel);
+  const external = await vscode.env.asExternalUri(vscode.Uri.parse(target));
+  return external.toString();
+}
+
+class SshHostsViewProvider {
+  constructor(context) {
+    this.context = context;
+    this.view = null;
+  }
+
+  resolveWebviewView(webviewView) {
+    this.view = webviewView;
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [
+        vscode.Uri.file(path.join(this.context.extensionPath, "media")),
+      ],
+    };
+    webviewView.webview.html = loadingHtml("正在加载主机列表…");
+    this.refresh()
+      .then(() => openWorkbench(this.context, { preserveFocus: true }))
+      .catch((err) => {
+        webviewView.webview.html = errorHtml(err);
+      });
+  }
+
+  async refresh() {
+    if (!this.view) return;
+    try {
+      const src = await resolveExternalUiUrl(this.context, "hosts");
+      this.view.webview.html = frameHtml(src);
+    } catch (err) {
+      this.view.webview.html = errorHtml(err);
+    }
   }
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+/**
+ * @param {vscode.ExtensionContext} context
+ * @param {{ preserveFocus?: boolean }} [opts]
+ */
+async function openWorkbench(context, opts = {}) {
+  const preserveFocus = Boolean(opts.preserveFocus);
+  if (workbenchPanel) {
+    workbenchPanel.reveal(vscode.ViewColumn.One, preserveFocus);
+    try {
+      const src = await resolveExternalUiUrl(context, "work");
+      workbenchPanel.webview.html = frameHtml(src);
+    } catch (err) {
+      workbenchPanel.webview.html = errorHtml(err);
+    }
+    return workbenchPanel;
+  }
+
+  workbenchPanel = vscode.window.createWebviewPanel(
+    "cursorSshMcp.workbench",
+    "SSH 工作台",
+    { viewColumn: vscode.ViewColumn.One, preserveFocus },
+    {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+      localResourceRoots: [
+        vscode.Uri.file(path.join(context.extensionPath, "media")),
+      ],
+    }
+  );
+
+  workbenchPanel.webview.html = loadingHtml("正在打开 SSH 工作台…");
+  workbenchPanel.onDidDispose(() => {
+    workbenchPanel = null;
+  });
+
+  try {
+    const src = await resolveExternalUiUrl(context, "work");
+    workbenchPanel.webview.html = frameHtml(src);
+  } catch (err) {
+    workbenchPanel.webview.html = errorHtml(err);
+  }
+  return workbenchPanel;
 }
 
 /**
  * @param {vscode.ExtensionContext} context
  */
 function activate(context) {
-  const provider = new SshPanelProvider(context);
+  const provider = new SshHostsViewProvider(context);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("cursorSshMcp.panel", provider, {
@@ -199,13 +253,22 @@ function activate(context) {
     vscode.commands.registerCommand("cursorSshMcp.focusPanel", async () => {
       await vscode.commands.executeCommand("cursorSshMcp.panel.focus");
       await provider.refresh();
+      await openWorkbench(context, { preserveFocus: false });
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("cursorSshMcp.openWorkbench", async () => {
+      await openWorkbench(context, { preserveFocus: false });
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("cursorSshMcp.openExternal", async () => {
       const info = await ensureUiServer(context);
-      await vscode.env.openExternal(vscode.Uri.parse(info.url));
+      await vscode.env.openExternal(
+        vscode.Uri.parse(uiUrl(info.port, "all"))
+      );
     })
   );
 
@@ -220,6 +283,9 @@ function activate(context) {
         uiProcess = null;
       }
       await provider.refresh();
+      if (workbenchPanel) {
+        await openWorkbench(context, { preserveFocus: true });
+      }
       vscode.window.showInformationMessage("SSH UI server restarted");
     })
   );

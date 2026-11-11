@@ -1,8 +1,8 @@
 {
   "name": "cursor-ssh-mcp",
   "displayName": "Cursor SSH (MCP)",
-  "description": "Resizable Activity Bar SSH panel (hosts, SFTP, terminal) backed by cursor-ssh-mcp shared config.",
-  "version": "1.1.0",
+  "description": "Activity Bar host list + editor SSH workbench (SFTP/terminal) backed by cursor-ssh-mcp.",
+  "version": "1.3.0",
   "publisher": "cursor-ssh-mcp",
   "engines": {
     "vscode": "^1.85.0"
@@ -13,6 +13,7 @@
   "activationEvents": [
     "onView:cursorSshMcp.panel",
     "onCommand:cursorSshMcp.focusPanel",
+    "onCommand:cursorSshMcp.openWorkbench",
     "onCommand:cursorSshMcp.openExternal",
     "onCommand:cursorSshMcp.restartUi"
   ],
@@ -42,6 +43,11 @@
       {
         "command": "cursorSshMcp.focusPanel",
         "title": "SSH: Focus Panel",
+        "category": "SSH"
+      },
+      {
+        "command": "cursorSshMcp.openWorkbench",
+        "title": "SSH: Open Workbench",
         "category": "SSH"
       },
       {
