@@ -153,15 +153,84 @@ function frameHtml(src) {
   <script>
     (function () {
       const vscode = acquireVsCodeApi();
+      const iframe = document.querySelector("iframe");
       window.addEventListener("message", function (event) {
         const data = event.data;
-        if (!data || data.source !== "cursor-ssh-mcp-ui") return;
-        vscode.postMessage(data);
+        if (!data) return;
+        // UI iframe → 扩展主机（打开工作台 / 读剪贴板等）
+        if (data.source === "cursor-ssh-mcp-ui") {
+          vscode.postMessage(data);
+          return;
+        }
+        // 扩展主机 → UI iframe（剪贴板结果等）
+        if (data.source === "cursor-ssh-mcp-host" && iframe && iframe.contentWindow) {
+          iframe.contentWindow.postMessage(data, "*");
+        }
       });
     })();
   </script>
 </body>
 </html>`;
+}
+
+/**
+ * 处理来自 UI iframe 的消息。剪贴板走 vscode.env，兼容 Win/Mac 各版 Cursor。
+ * @param {vscode.Webview} webview
+ * @param {any} msg
+ * @param {vscode.ExtensionContext} [context]
+ */
+async function handleUiMessage(webview, msg, context) {
+  if (!msg || msg.source !== "cursor-ssh-mcp-ui") return;
+
+  if (msg.type === "clipboardRead") {
+    let text = "";
+    try {
+      text = await vscode.env.clipboard.readText();
+    } catch (err) {
+      getOutput().appendLine(
+        `clipboard read failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    webview.postMessage({
+      source: "cursor-ssh-mcp-host",
+      type: "clipboardReadResult",
+      requestId: msg.requestId,
+      text: typeof text === "string" ? text : "",
+    });
+    return;
+  }
+
+  if (msg.type === "clipboardWrite") {
+    try {
+      await vscode.env.clipboard.writeText(String(msg.text || ""));
+    } catch (err) {
+      getOutput().appendLine(
+        `clipboard write failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    if (msg.requestId) {
+      webview.postMessage({
+        source: "cursor-ssh-mcp-host",
+        type: "clipboardWriteResult",
+        requestId: msg.requestId,
+        ok: true,
+      });
+    }
+    return;
+  }
+
+  if (
+    (msg.type === "openWorkbench" || msg.type === "selectHost") &&
+    context
+  ) {
+    try {
+      await openWorkbench(context, { preserveFocus: false });
+    } catch (err) {
+      getOutput().appendLine(
+        `openWorkbench failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
 }
 
 async function resolveExternalUiUrl(context, panel) {
@@ -187,17 +256,7 @@ class SshHostsViewProvider {
     };
     webviewView.webview.html = loadingHtml("正在加载主机列表…");
     webviewView.webview.onDidReceiveMessage(async (msg) => {
-      if (!msg || msg.source !== "cursor-ssh-mcp-ui") return;
-      // 主机侧栏点「文件 / 终端 / 默认」时，若工作台已关闭则重新打开
-      if (msg.type === "openWorkbench" || msg.type === "selectHost") {
-        try {
-          await openWorkbench(this.context, { preserveFocus: false });
-        } catch (err) {
-          getOutput().appendLine(
-            `openWorkbench failed: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      }
+      await handleUiMessage(webviewView.webview, msg, this.context);
     });
     this.refresh()
       .then(() => openWorkbench(this.context, { preserveFocus: true }))
@@ -252,6 +311,9 @@ async function openWorkbench(context, opts = {}) {
   );
 
   workbenchPanel.webview.html = loadingHtml("正在打开 SSH 工作台…");
+  workbenchPanel.webview.onDidReceiveMessage(async (msg) => {
+    await handleUiMessage(workbenchPanel.webview, msg, context);
+  });
   workbenchPanel.onDidDispose(() => {
     workbenchPanel = null;
   });

@@ -270,42 +270,43 @@
         <div class="section-title">基本信息</div>
         <div class="form-grid">
           <label>标识 ID <span class="req">必填</span>
-            <input name="id" required placeholder="例如 prod-web-01" />
+            <input name="id" required placeholder="例：prod-web-01（灰色仅为示例，不会自动填入）" />
             <small>唯一标识，保存后不可改</small>
           </label>
           <label>显示名称
-            <input name="name" placeholder="例如 生产 Web" />
+            <input name="name" placeholder="例：生产 Web（可留空，默认用 ID）" />
             <small>显示在左侧主机卡片</small>
           </label>
           <label>主机 / IP <span class="req">必填</span>
-            <input name="host" required placeholder="192.168.1.10 或 example.com" />
+            <input name="host" required placeholder="例：192.168.1.10 或 example.com" />
           </label>
           <label>端口
-            <input name="port" type="number" value="22" min="1" max="65535" />
+            <input name="port" type="number" value="22" min="1" max="65535" placeholder="默认 22" />
+            <small>已预填 22，可按需修改</small>
           </label>
           <label>用户名 <span class="req">必填</span>
-            <input name="username" required placeholder="root / ubuntu" />
+            <input name="username" required placeholder="例：root（灰色仅为示例）" />
           </label>
           <label>默认目录
-            <input name="defaultCwd" placeholder="/home/ubuntu" />
-            <small>打开 SFTP / 终端时的起始目录</small>
+            <input name="defaultCwd" placeholder="可留空；例：/home/ubuntu" />
+            <small>留空则用远端默认目录；不会自动填入示例路径</small>
           </label>
         </div>
       </section>
 
       <section class="form-section">
         <div class="section-title">认证方式</div>
-        <p class="section-tip">优先使用私钥；没有密钥时再填登录密码。</p>
+        <p class="section-tip">私钥路径与登录密码二选一即可。私钥路径留空时只用密码，不会读取本机默认密钥文件。</p>
         <div class="form-grid">
           <label class="span-2">私钥路径
-            <input name="privateKeyPath" placeholder="~/.ssh/id_rsa" />
-            <small>本机绝对路径或 ~ 开头路径</small>
+            <input name="privateKeyPath" placeholder="可留空（密码登录）；例：~/.ssh/id_ed25519" autocomplete="off" />
+            <small>灰色文字仅为示例，不会当作真实路径。请填写本机绝对路径或 ~ 开头路径</small>
           </label>
           <label>登录密码
-            <input name="password" type="password" placeholder="仅保存在本机，可留空" autocomplete="new-password" />
+            <input name="password" type="password" placeholder="可留空；仅保存在本机" autocomplete="new-password" spellcheck="false" />
           </label>
           <label>密钥口令
-            <input name="passphrase" type="password" placeholder="私钥有口令时填写" autocomplete="new-password" />
+            <input name="passphrase" type="password" placeholder="可留空；仅当私钥有口令时填写" autocomplete="new-password" spellcheck="false" />
           </label>
         </div>
       </section>

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 中文版：[CHANGELOG.zh-CN.md](./CHANGELOG.zh-CN.md)
 
+## [1.3.19] - 2026-11-11
+
+### Fixed
+- Paste works in all inputs (Ctrl/Cmd+V) via extension-host clipboard bridge; compatible with Windows/macOS Cursor iframes.
+- Delete host no longer relies on `window.confirm` (often broken in iframes); uses in-app confirm dialog.
+- Host form placeholders clarified: gray text is example-only; empty private key path means password auth (no default key file).
+
 ## [1.3.18] - 2026-11-11
 
 ### Added

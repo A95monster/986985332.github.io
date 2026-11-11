@@ -1041,30 +1041,45 @@ function renderHosts() {
 }
 
 async function deleteHost(id, label) {
-  if (!confirm(`确定删除主机「${label}」吗？此操作不可恢复。`)) return;
-  disconnectHost(id);
-  await api(`/api/hosts/${encodeURIComponent(id)}`, { method: "DELETE" });
-  if (state.activeId === id) {
-    state.activeId = null;
-    updateTermStatus({ status: "idle" });
-  }
-  ["left", "right"].forEach((side) => {
-    const ep = state.endpoints[side];
-    if (ep.kind === "host" && ep.hostId === id) {
-      state.endpoints[side] = side === "left" ? { kind: "local", hostId: null } : { kind: "host", hostId: null };
-      state.paneSelected[side] = [];
-    }
+  // Cursor / VS Code iframe 里 window.confirm 常被拦截或恒为 false，改用应用内对话框
+  const ok = await askConfirm({
+    title: "删除主机",
+    message: `确定删除主机「${label}」吗？此操作不可恢复。`,
+    okText: "删除",
   });
-  renderSourceMenus();
-  refreshPane("left");
-  refreshPane("right");
-  updateActiveLabels();
-  if (state.sessions[id]?.mount) {
-    state.sessions[id].mount.remove();
+  if (!ok) return false;
+  try {
+    disconnectHost(id);
+    await api(`/api/hosts/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (state.activeId === id) {
+      state.activeId = null;
+      updateTermStatus({ status: "idle" });
+    }
+    ["left", "right"].forEach((side) => {
+      const ep = state.endpoints[side];
+      if (ep.kind === "host" && ep.hostId === id) {
+        state.endpoints[side] = side === "left" ? { kind: "local", hostId: null } : { kind: "host", hostId: null };
+        state.paneSelected[side] = [];
+      }
+    });
+    renderSourceMenus();
+    refreshPane("left");
+    refreshPane("right");
+    updateActiveLabels();
+    if (state.sessions[id]?.mount) {
+      state.sessions[id].mount.remove();
+    }
+    delete state.sessions[id];
+    await refreshHosts();
+    publish({ type: "hostsChanged" });
+    return true;
+  } catch (err) {
+    await showAlert({
+      title: "删除失败",
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return false;
   }
-  delete state.sessions[id];
-  await refreshHosts();
-  publish({ type: "hostsChanged" });
 }
 
 async function refreshHosts() {
@@ -2284,8 +2299,8 @@ function hideContextMenu() {
 async function mkdirOn(side) {
   const name = await askText({
     title: "新建文件夹",
-    message: "请输入文件夹名称",
-    placeholder: "new-folder",
+    message: "请输入文件夹名称（下方灰色仅为示例，不会自动创建）",
+    placeholder: "例：docs",
   });
   if (!name || !name.trim()) return;
   const ep = state.endpoints[side];
@@ -2503,23 +2518,33 @@ function setupDialog() {
       host: form.host.value.trim(),
       port: Number(form.port.value || 22),
       username: form.username.value.trim(),
+      // 空字符串 = 明确清除密钥路径，走密码登录；切勿把 placeholder 当默认值
       privateKeyPath: form.privateKeyPath.value.trim(),
       defaultCwd: form.defaultCwd.value.trim(),
     };
     if (form.password.value) payload.password = form.password.value;
     if (form.passphrase.value) payload.passphrase = form.passphrase.value;
-    await api("/api/hosts", { method: "POST", body: JSON.stringify(payload) });
-    $("host-dialog").close();
-    await refreshHosts();
-    publish({ type: "hostsChanged" });
+    try {
+      await api("/api/hosts", { method: "POST", body: JSON.stringify(payload) });
+      $("host-dialog").close();
+      await refreshHosts();
+      publish({ type: "hostsChanged" });
+    } catch (err) {
+      await showAlert({
+        title: "保存失败",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   $("btn-delete-host").addEventListener("click", async () => {
     const form = $("host-form");
     const id = form.id.value.trim();
     if (!id) return;
+    const label = form.name.value.trim() || id;
+    // 必须先关掉主机对话框：HTML 不能嵌套两个 showModal，否则确认框出不来
     $("host-dialog").close();
-    await deleteHost(id, form.name.value.trim() || id);
+    await deleteHost(id, label);
   });
 }
 
@@ -2929,18 +2954,202 @@ function setupBus() {
   });
 }
 
-async function copyText(text) {
+/* —— 剪贴板：兼容 Cursor iframe / Win / Mac / 各版本 —— */
+let pasteReqSeq = 0;
+const pendingClipboard = new Map();
+
+function isEditableField(el) {
+  if (!el || el.disabled) return false;
+  const tag = el.tagName;
+  if (tag === "TEXTAREA") return !el.readOnly;
+  if (tag === "INPUT") {
+    if (el.readOnly) return false;
+    const type = String(el.type || "text").toLowerCase();
+    return [
+      "text",
+      "search",
+      "url",
+      "tel",
+      "password",
+      "email",
+      "number",
+      "date",
+      "datetime-local",
+      "month",
+      "week",
+      "time",
+      "",
+    ].includes(type);
+  }
+  return Boolean(el.isContentEditable);
+}
+
+function insertTextIntoField(el, text) {
+  if (!el || text == null) return;
+  const value = String(text);
+  if (typeof el.selectionStart === "number" && typeof el.value === "string") {
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const next = el.value.slice(0, start) + value + el.value.slice(end);
+    const proto = el.tagName === "TEXTAREA"
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, "value");
+    if (desc && desc.set) desc.set.call(el, next);
+    else el.value = next;
+    const pos = start + value.length;
+    try {
+      el.setSelectionRange(pos, pos);
+    } catch {
+      /* number 等类型可能不支持 */
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return;
+  }
   try {
-    await navigator.clipboard.writeText(text);
-    return true;
+    document.execCommand("insertText", false, value);
   } catch {
+    /* ignore */
+  }
+}
+
+function postToExtension(payload) {
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ source: "cursor-ssh-mcp-ui", ...payload }, "*");
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+function requestClipboardText() {
+  return new Promise(async (resolve) => {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.readText === "function") {
+        const t = await navigator.clipboard.readText();
+        if (typeof t === "string") {
+          resolve(t);
+          return;
+        }
+      }
+    } catch {
+      /* Cursor iframe 常拒绝 clipboard API，改走扩展主机 */
+    }
+
+    const requestId = `cb-r-${++pasteReqSeq}-${Date.now()}`;
+    const timer = setTimeout(() => {
+      pendingClipboard.delete(requestId);
+      resolve("");
+    }, 2500);
+    pendingClipboard.set(requestId, (payload) => {
+      clearTimeout(timer);
+      resolve(typeof payload?.text === "string" ? payload.text : "");
+    });
+    if (!postToExtension({ type: "clipboardRead", requestId })) {
+      clearTimeout(timer);
+      pendingClipboard.delete(requestId);
+      resolve("");
+    }
+  });
+}
+
+function requestClipboardWrite(text) {
+  return new Promise(async (resolve) => {
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(String(text || ""));
+        resolve(true);
+        return;
+      }
+    } catch {
+      /* fall through */
+    }
+
+    const requestId = `cb-w-${++pasteReqSeq}-${Date.now()}`;
+    const timer = setTimeout(() => {
+      pendingClipboard.delete(requestId);
+      resolve(false);
+    }, 2500);
+    pendingClipboard.set(requestId, () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+    if (!postToExtension({ type: "clipboardWrite", requestId, text: String(text || "") })) {
+      clearTimeout(timer);
+      pendingClipboard.delete(requestId);
+      resolve(false);
+    }
+  });
+}
+
+function setupPasteSupport() {
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || data.source !== "cursor-ssh-mcp-host") return;
+    if (
+      (data.type === "clipboardReadResult" || data.type === "clipboardWriteResult") &&
+      data.requestId
+    ) {
+      const cb = pendingClipboard.get(data.requestId);
+      if (cb) {
+        pendingClipboard.delete(data.requestId);
+        cb(data);
+      }
+    }
+  });
+
+  // Ctrl+V / Cmd+V：Win Cursor 与嵌套 iframe 下原生粘贴常失效，统一走剪贴板桥
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      const key = String(e.key || "").toLowerCase();
+      const isPaste = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && key === "v";
+      if (!isPaste) return;
+      const el = document.activeElement;
+      if (!isEditableField(el)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      requestClipboardText().then((text) => {
+        if (text) insertTextIntoField(el, text);
+      });
+    },
+    true
+  );
+
+  // 右键粘贴 / 部分环境会直接触发 paste 事件
+  document.addEventListener(
+    "paste",
+    (e) => {
+      const el = document.activeElement;
+      if (!isEditableField(el)) return;
+      const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+      if (text == null || text === "") return;
+      e.preventDefault();
+      insertTextIntoField(el, text);
+    },
+    true
+  );
+}
+
+async function copyText(text) {
+  const ok = await requestClipboardWrite(text);
+  if (ok) return true;
+  try {
     const ta = document.createElement("textarea");
-    ta.value = text;
+    ta.value = String(text || "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
     document.body.appendChild(ta);
     ta.select();
     document.execCommand("copy");
     ta.remove();
     return true;
+  } catch {
+    return false;
   }
 }
 
@@ -3452,6 +3661,7 @@ function setupUtilRail() {
 }
 
 async function main() {
+  setupPasteSupport();
   setupBus();
   setupDialog();
   if (state.panel !== "hosts") {
