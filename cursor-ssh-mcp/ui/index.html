@@ -3,93 +3,102 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>SSH — Cursor</title>
+  <title>SSH 面板</title>
   <link rel="stylesheet" href="/styles.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+  <link rel="stylesheet" href="/vendor/xterm.css" />
 </head>
 <body>
   <div id="app">
     <aside id="host-pane">
       <div class="pane-title">
-        <span>SSH Hosts</span>
+        <span>主机列表</span>
         <div class="title-actions">
-          <button id="btn-add" title="Add host">+</button>
-          <button id="btn-refresh" title="Refresh">↻</button>
+          <button id="btn-add" title="添加主机">+</button>
+          <button id="btn-refresh" title="刷新">↻</button>
         </div>
       </div>
       <ul id="host-list"></ul>
+      <div id="host-hint">右键可编辑主机</div>
     </aside>
 
     <div id="main-split">
-      <div id="work-area">
-        <div class="tabs">
-          <button class="tab active" data-tab="sftp">SFTP</button>
-          <button class="tab" data-tab="info">Session</button>
-        </div>
-        <section id="tab-sftp" class="tab-panel active">
-          <div id="sftp-split">
-            <div class="file-pane" id="local-pane">
-              <div class="file-toolbar">
-                <span>Local</span>
-                <input id="local-path" />
-                <button id="local-up">↑</button>
-                <button id="local-go">Go</button>
-              </div>
-              <ul id="local-list" class="file-list"></ul>
-            </div>
-            <div class="transfer-actions">
-              <button id="btn-upload" title="Upload selected local → remote">⇒</button>
-              <button id="btn-download" title="Download selected remote → local">⇐</button>
-            </div>
-            <div class="file-pane" id="remote-pane">
-              <div class="file-toolbar">
-                <span>Remote</span>
-                <input id="remote-path" />
-                <button id="remote-up">↑</button>
-                <button id="remote-go">Go</button>
-              </div>
-              <ul id="remote-list" class="file-list"></ul>
-            </div>
-          </div>
-        </section>
-        <section id="tab-info" class="tab-panel">
-          <pre id="session-info">Select a host (double-click to open terminal).</pre>
-        </section>
+      <div id="panel-restore" class="hidden">
+        <button type="button" id="btn-restore-sftp" class="hidden">恢复文件</button>
+        <button type="button" id="btn-restore-term" class="hidden">恢复终端</button>
       </div>
 
-      <div id="term-resize"></div>
+      <section id="sftp-pane">
+        <div class="pane-title">
+          <span id="sftp-title">文件传输</span>
+          <div class="title-actions">
+            <button type="button" id="btn-close-sftp" title="关闭文件面板">关闭</button>
+          </div>
+        </div>
+        <div id="sftp-split">
+          <div class="file-pane" id="local-pane">
+            <div class="file-toolbar">
+              <span>本地</span>
+              <input id="local-path" />
+              <button type="button" id="local-up" title="上级目录">↑</button>
+              <button type="button" id="local-go">转到</button>
+            </div>
+            <ul id="local-list" class="file-list"></ul>
+          </div>
+          <div class="transfer-actions">
+            <button type="button" id="btn-upload" title="上传选中本地文件 → 远程">⇒</button>
+            <button type="button" id="btn-download" title="下载选中远程文件 → 本地">⇐</button>
+          </div>
+          <div class="file-pane" id="remote-pane">
+            <div class="file-toolbar">
+              <span>远程</span>
+              <input id="remote-path" />
+              <button type="button" id="remote-up" title="上级目录">↑</button>
+              <button type="button" id="remote-go">转到</button>
+            </div>
+            <ul id="remote-list" class="file-list"></ul>
+          </div>
+        </div>
+      </section>
+
+      <div id="term-resize" title="拖动调整高度"></div>
+
       <section id="term-pane">
         <div class="pane-title">
-          <span id="term-title">Terminal</span>
-          <button id="btn-term-clear">Clear</button>
+          <span id="term-title">终端</span>
+          <div class="title-actions">
+            <button type="button" id="btn-term-clear">清屏</button>
+            <button type="button" id="btn-close-term" title="关闭终端面板">关闭</button>
+          </div>
         </div>
-        <div id="terminal"></div>
+        <div id="terminals">
+          <div id="term-placeholder">选择主机后点击「终端」或「默认」打开会话</div>
+        </div>
       </section>
     </div>
   </div>
 
   <dialog id="host-dialog">
     <form method="dialog" id="host-form">
-      <h3 id="dialog-title">Host configuration</h3>
-      <label>ID <input name="id" required /></label>
-      <label>Name <input name="name" /></label>
-      <label>Host / IP <input name="host" required /></label>
-      <label>Port <input name="port" type="number" value="22" /></label>
-      <label>Username <input name="username" required /></label>
-      <label>Private key path <input name="privateKeyPath" placeholder="~/.ssh/id_ed25519" /></label>
-      <label>Password <input name="password" type="password" placeholder="stored locally in secrets.json" /></label>
-      <label>Key passphrase <input name="passphrase" type="password" /></label>
-      <label>Default cwd <input name="defaultCwd" /></label>
+      <h3 id="dialog-title">主机配置</h3>
+      <label>标识 ID <input name="id" required /></label>
+      <label>显示名称 <input name="name" /></label>
+      <label>主机 / IP <input name="host" required /></label>
+      <label>端口 <input name="port" type="number" value="22" /></label>
+      <label>用户名 <input name="username" required /></label>
+      <label>私钥路径 <input name="privateKeyPath" placeholder="~/.ssh/id_ed25519" /></label>
+      <label>密码 <input name="password" type="password" placeholder="保存在本地 secrets.json" /></label>
+      <label>密钥口令 <input name="passphrase" type="password" /></label>
+      <label>默认目录 <input name="defaultCwd" /></label>
       <div class="dialog-actions">
-        <button value="cancel" type="submit">Cancel</button>
-        <button id="btn-save-host" value="save" type="submit">Save</button>
-        <button id="btn-delete-host" type="button" class="danger">Delete</button>
+        <button value="cancel" type="submit">取消</button>
+        <button id="btn-save-host" value="save" type="submit">保存</button>
+        <button id="btn-delete-host" type="button" class="danger">删除</button>
       </div>
     </form>
   </dialog>
 
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/xterm-addon-fit.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

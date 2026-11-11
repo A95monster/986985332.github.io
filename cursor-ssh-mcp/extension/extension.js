@@ -81,6 +81,7 @@ async function ensureUiServer(context) {
     env: {
       ...process.env,
       CURSOR_SSH_MCP_UI_PORT: String(port),
+      ELECTRON_RUN_AS_NODE: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -120,7 +121,7 @@ class SshPanelProvider {
         vscode.Uri.file(path.join(this.context.extensionPath, "media")),
       ],
     };
-    webviewView.webview.html = this.loadingHtml("Starting SSH panel…");
+    webviewView.webview.html = this.loadingHtml("正在启动 SSH 面板…");
     this.refresh().catch((err) => {
       webviewView.webview.html = this.errorHtml(err);
     });
@@ -141,7 +142,7 @@ class SshPanelProvider {
 
   loadingHtml(message) {
     return `<!DOCTYPE html>
-<html><body style="margin:0;background:#1e1e1e;color:#ccc;font:13px sans-serif;padding:16px;">
+<html><body style="margin:0;background:#eef6f4;color:#16332e;font:13px 'PingFang SC',sans-serif;padding:16px;">
   ${escapeHtml(message)}
 </body></html>`;
   }
@@ -149,10 +150,10 @@ class SshPanelProvider {
   errorHtml(err) {
     const msg = err instanceof Error ? err.message : String(err);
     return `<!DOCTYPE html>
-<html><body style="margin:0;background:#1e1e1e;color:#f0c0c0;font:13px sans-serif;padding:16px;white-space:pre-wrap;">
-  <strong>SSH panel failed to start</strong>
+<html><body style="margin:0;background:#eef6f4;color:#9a3412;font:13px 'PingFang SC',sans-serif;padding:16px;white-space:pre-wrap;">
+  <strong>SSH 面板启动失败</strong>
   <p>${escapeHtml(msg)}</p>
-  <p>Install deps: <code>npm install</code> in cursor-ssh-mcp, then run command “SSH: Restart UI Server”.</p>
+  <p>请在 cursor-ssh-mcp 目录执行 <code>npm install</code>，然后运行命令「SSH: Restart UI Server」。</p>
 </body></html>`;
   }
 
@@ -164,7 +165,7 @@ class SshPanelProvider {
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none'; frame-src ${src} http://127.0.0.1:* http://localhost:* https:; style-src 'unsafe-inline';" />
   <style>
-    html, body, iframe { margin:0; padding:0; width:100%; height:100%; border:0; background:#2b2b2b; }
+    html, body, iframe { margin:0; padding:0; width:100%; height:100%; border:0; background:#eef6f4; }
     body { overflow:hidden; }
   </style>
 </head>

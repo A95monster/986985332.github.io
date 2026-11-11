@@ -2,7 +2,7 @@
   "name": "cursor-ssh-mcp",
   "displayName": "Cursor SSH (MCP)",
   "description": "Resizable Activity Bar SSH panel (hosts, SFTP, terminal) backed by cursor-ssh-mcp shared config.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "cursor-ssh-mcp",
   "engines": {
     "vscode": "^1.85.0"
