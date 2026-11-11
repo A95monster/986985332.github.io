@@ -12,7 +12,7 @@
     "start": "node ./src/index.js",
     "ui": "node ./src/ui-cli.js",
     "test:smoke": "node ./scripts/smoke-hosts.js",
-    "extension:package": "cd extension && npx --yes @vscode/vsce package --no-dependencies -o ../cursor-ssh-mcp.vsix"
+    "extension:package": "cd extension && npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository -o ../cursor-ssh-mcp.vsix"
   },
   "engines": {
     "node": ">=18"
