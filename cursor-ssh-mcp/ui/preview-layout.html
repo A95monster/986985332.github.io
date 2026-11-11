@@ -3,34 +3,23 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>SSH 布局预览</title>
+  <title>SSH</title>
   <style>
-    html, body {
-      margin: 0;
-      height: 100%;
-      background: #eef6f4;
-    }
-    #layout {
-      display: grid;
-      grid-template-columns: 280px 1fr;
-      height: 100%;
-      min-height: 0;
-    }
-    iframe {
-      width: 100%;
-      height: 100%;
-      border: 0;
-      background: #eef6f4;
-    }
-    #hosts-frame {
-      border-right: 1px solid #b7d4ce;
-    }
+    html, body { margin:0; height:100%; background:#eef3f1; }
+    .shell { display:grid; grid-template-columns: 280px 1fr; height:100%; }
+    iframe { width:100%; height:100%; border:0; display:block; background:#fff; }
+    .side { border-right: 1px solid rgba(28,42,38,0.12); min-width:0; }
+    .main { min-width:0; }
   </style>
 </head>
 <body>
-  <div id="layout">
-    <iframe id="hosts-frame" src="/?panel=hosts" title="主机列表"></iframe>
-    <iframe id="work-frame" src="/?panel=work" title="SSH 工作台"></iframe>
+  <div class="shell">
+    <div class="side">
+      <iframe src="/hosts" title="hosts"></iframe>
+    </div>
+    <div class="main">
+      <iframe src="/work" title="work"></iframe>
+    </div>
   </div>
 </body>
 </html>

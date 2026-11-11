@@ -169,7 +169,10 @@ export function resolveAuth(host, secret = {}) {
     host: host.host,
     port: host.port || 22,
     username: host.username,
-    readyTimeout: 20000,
+    readyTimeout: 60000,
+    // 大文件传输期间保活，避免中间设备掐断空闲连接
+    keepaliveInterval: 15000,
+    keepaliveCountMax: 8,
   };
 
   if (host.privateKeyPath) {

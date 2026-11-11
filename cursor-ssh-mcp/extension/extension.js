@@ -33,9 +33,10 @@ function getUiPort() {
 }
 
 function uiUrl(port, panel) {
-  const base = `http://127.0.0.1:${port}/`;
-  if (!panel) return base;
-  return `${base}?panel=${encodeURIComponent(panel)}`;
+  // 用路径而不是 query，避免 asExternalUri 丢掉 panel 参数导致左右重复
+  if (panel === "hosts") return `http://127.0.0.1:${port}/hosts`;
+  if (panel === "work") return `http://127.0.0.1:${port}/work`;
+  return `http://127.0.0.1:${port}/`;
 }
 
 function probeUi(port) {

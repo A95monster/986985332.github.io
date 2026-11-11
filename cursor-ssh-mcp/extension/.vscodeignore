@@ -1,2 +1,5 @@
 **/*.map
 **/.DS_Store
+
+.playwright-cli
+**/.playwright-cli/**

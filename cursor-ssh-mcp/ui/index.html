@@ -3,101 +3,295 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>SSH 面板</title>
+  <title>SSH 连接</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+SC:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=JetBrains+Mono:wght@400;500&family=Fira+Code:wght@400;500&family=Source+Code+Pro:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
   <link rel="stylesheet" href="/vendor/xterm.css" />
 </head>
 <body>
   <div id="app">
     <aside id="host-pane">
-      <div class="pane-title">
-        <span>主机列表</span>
-        <div class="title-actions">
-          <button id="btn-add" title="添加主机">+</button>
-          <button id="btn-refresh" title="刷新">↻</button>
+      <header class="pane-header">
+        <div class="brand-block">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <div class="brand-title">主机</div>
+            <div class="brand-sub">SSH</div>
+          </div>
         </div>
+        <div class="title-actions">
+          <button type="button" id="btn-add" class="btn btn-primary btn-icon" title="新建主机">＋</button>
+          <button type="button" id="btn-refresh" class="btn btn-ghost btn-compact" title="刷新列表">刷新</button>
+        </div>
+      </header>
+      <div id="host-empty" class="empty-state hidden">
+        <p>还没有主机</p>
+        <button type="button" id="btn-add-empty" class="btn btn-primary">新建主机</button>
       </div>
       <ul id="host-list"></ul>
     </aside>
 
-    <div id="main-split">
-      <div id="panel-restore" class="hidden">
-        <button type="button" id="btn-restore-sftp" class="hidden">恢复文件</button>
-        <button type="button" id="btn-restore-term" class="hidden">恢复终端</button>
+    <div id="work-row">
+      <div id="main-split">
+        <section id="sftp-pane" class="panel-card">
+          <div class="panel-toolbar">
+            <div class="panel-title-wrap">
+              <span class="panel-dot sftp"></span>
+              <strong>文件传输</strong>
+              <span id="sftp-host-label" class="panel-sub">未选择主机</span>
+            </div>
+            <div class="panel-actions">
+              <button type="button" id="btn-show-term" class="btn btn-ghost btn-compact hidden">显示终端</button>
+              <button type="button" id="btn-close-sftp" class="btn btn-ghost btn-compact" title="关闭文件面板">关闭</button>
+            </div>
+          </div>
+          <div class="sftp-options">
+            <label class="sftp-opt" title="显示以 . 开头的隐藏文件">
+              <input type="checkbox" id="sftp-show-hidden" />
+              显示隐藏文件
+            </label>
+            <span id="transfer-hint" class="transfer-hint-inline">拖拽文件到对侧即可传输 · 右键可操作</span>
+          </div>
+          <div id="sftp-split">
+            <div class="file-pane" id="local-pane" data-side="left">
+              <div class="file-head">
+                <div class="pane-source">
+                  <button type="button" class="pane-source-btn" id="left-source-btn" aria-haspopup="listbox" title="切换左侧来源">本地</button>
+                  <div class="pane-source-menu hidden" id="left-source-menu" role="listbox"></div>
+                </div>
+                <div class="file-filter-wrap">
+                  <input id="left-filter" type="search" placeholder="筛选…" aria-label="左侧筛选" />
+                </div>
+                <div class="file-actions">
+                  <button type="button" class="btn btn-ghost btn-compact" data-act="mkdir" data-side="left">新建</button>
+                  <button type="button" class="btn btn-ghost btn-compact" id="left-refresh" data-act="refresh" data-side="left">刷新</button>
+                </div>
+              </div>
+              <div class="file-nav">
+                <button type="button" id="local-up" class="btn btn-ghost btn-compact nav-btn" title="上级">‹</button>
+                <div id="left-crumb" class="file-crumb"></div>
+                <input id="local-path" class="path-hidden" aria-label="左侧路径" />
+                <button type="button" id="local-go" class="btn btn-secondary btn-compact">转到</button>
+              </div>
+              <div class="file-table-wrap">
+                <table class="file-table" data-side="left">
+                  <colgroup>
+                    <col data-col="name" />
+                    <col data-col="mtime" />
+                    <col data-col="size" />
+                    <col data-col="kind" />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th class="col-name sortable" data-sort="name"><span class="th-label">名称</span><span class="col-resizer" data-resize="name" title="拖动调整列宽"></span></th>
+                      <th class="col-mtime sortable" data-sort="mtime"><span class="th-label">修改时间</span><span class="col-resizer" data-resize="mtime" title="拖动调整列宽"></span></th>
+                      <th class="col-size sortable" data-sort="size"><span class="th-label">大小</span><span class="col-resizer" data-resize="size" title="拖动调整列宽"></span></th>
+                      <th class="col-kind sortable" data-sort="kind"><span class="th-label">类型</span></th>
+                    </tr>
+                  </thead>
+                  <tbody id="local-list"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="file-pane" id="remote-pane" data-side="right">
+              <div class="file-head">
+                <div class="pane-source">
+                  <button type="button" class="pane-source-btn" id="right-source-btn" aria-haspopup="listbox" title="切换右侧来源">远端</button>
+                  <div class="pane-source-menu hidden" id="right-source-menu" role="listbox"></div>
+                </div>
+                <div class="file-filter-wrap">
+                  <input id="right-filter" type="search" placeholder="筛选…" aria-label="右侧筛选" />
+                </div>
+                <div class="file-actions">
+                  <button type="button" class="btn btn-ghost btn-compact" data-act="mkdir" data-side="right">新建</button>
+                  <button type="button" class="btn btn-ghost btn-compact" id="right-refresh" data-act="refresh" data-side="right">刷新</button>
+                </div>
+              </div>
+              <div class="file-nav">
+                <button type="button" id="remote-up" class="btn btn-ghost btn-compact nav-btn" title="上级">‹</button>
+                <div id="right-crumb" class="file-crumb"></div>
+                <input id="remote-path" class="path-hidden" aria-label="右侧路径" />
+                <button type="button" id="remote-go" class="btn btn-secondary btn-compact">转到</button>
+              </div>
+              <div class="file-table-wrap">
+                <table class="file-table" data-side="right">
+                  <colgroup>
+                    <col data-col="name" />
+                    <col data-col="mtime" />
+                    <col data-col="size" />
+                    <col data-col="kind" />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th class="col-name sortable" data-sort="name"><span class="th-label">名称</span><span class="col-resizer" data-resize="name" title="拖动调整列宽"></span></th>
+                      <th class="col-mtime sortable" data-sort="mtime"><span class="th-label">修改时间</span><span class="col-resizer" data-resize="mtime" title="拖动调整列宽"></span></th>
+                      <th class="col-size sortable" data-sort="size"><span class="th-label">大小</span><span class="col-resizer" data-resize="size" title="拖动调整列宽"></span></th>
+                      <th class="col-kind sortable" data-sort="kind"><span class="th-label">类型</span></th>
+                    </tr>
+                  </thead>
+                  <tbody id="remote-list"></tbody>
+                </table>
+              </div>
+              <div id="right-empty" class="pane-empty hidden">
+                <div class="pane-empty-icon" aria-hidden="true"></div>
+                <strong>连接到主机</strong>
+                <p>选择一台已保存的主机，开始用 SFTP 管理文件。</p>
+                <button type="button" id="btn-pick-right-host" class="btn btn-secondary btn-compact">选择主机</button>
+              </div>
+            </div>
+          </div>
+          <div id="transfer-progress" class="transfer-progress hidden">
+            <div id="transfer-progress-label" class="transfer-progress-label">传输中…</div>
+            <div class="transfer-progress-track">
+              <div id="transfer-progress-fill" class="transfer-progress-fill"></div>
+            </div>
+          </div>
+        </section>
+
+        <div id="file-context-menu" class="ctx-menu hidden" role="menu">
+          <button type="button" data-ctx="copy">复制到对侧目录</button>
+          <button type="button" data-ctx="rename">重命名</button>
+          <button type="button" data-ctx="delete" class="danger">删除</button>
+          <button type="button" data-ctx="refresh">刷新</button>
+          <button type="button" data-ctx="mkdir">新建文件夹</button>
+          <button type="button" data-ctx="chmod">修改权限</button>
+        </div>
+
+        <dialog id="app-prompt" class="app-modal">
+          <form method="dialog" id="app-prompt-form" class="app-modal-form">
+            <h3 id="app-prompt-title">输入</h3>
+            <p id="app-prompt-message" class="app-modal-msg"></p>
+            <input id="app-prompt-input" type="text" autocomplete="off" />
+            <div class="dialog-actions-right app-modal-actions">
+              <button type="submit" value="ok" class="btn btn-primary" id="app-prompt-ok">确定</button>
+              <button type="submit" value="cancel" class="btn btn-ghost">取消</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="app-confirm" class="app-modal">
+          <form method="dialog" id="app-confirm-form" class="app-modal-form">
+            <h3 id="app-confirm-title">确认</h3>
+            <p id="app-confirm-message" class="app-modal-msg"></p>
+            <div class="dialog-actions-right app-modal-actions">
+              <button type="submit" value="ok" class="btn btn-danger" id="app-confirm-ok">确定</button>
+              <button type="submit" value="cancel" class="btn btn-ghost">取消</button>
+            </div>
+          </form>
+        </dialog>
+
+        <div id="panel-resize" title="拖动调整面板高度"></div>
+
+        <section id="term-pane" class="panel-card term">
+          <div class="panel-toolbar term-header">
+            <div class="panel-title-wrap">
+              <span class="panel-dot term"></span>
+              <strong id="term-title">终端</strong>
+              <span id="term-status" class="status-pill idle">未连接</span>
+            </div>
+            <div class="panel-actions">
+              <button type="button" id="btn-show-sftp" class="btn btn-ghost btn-compact hidden">显示文件</button>
+              <button type="button" id="btn-toggle-util" class="btn btn-ghost btn-compact" title="显示/隐藏工具栏">工具</button>
+              <button type="button" id="btn-term-clear" class="btn btn-ghost btn-compact">清屏</button>
+              <button type="button" id="btn-close-term" class="btn btn-ghost btn-compact" title="关闭终端面板">关闭</button>
+            </div>
+          </div>
+          <div id="terminal-stack"></div>
+          <div id="term-placeholder" class="term-placeholder">
+            未连接终端
+          </div>
+        </section>
       </div>
 
-      <section id="sftp-pane">
-        <div class="pane-title">
-          <span id="sftp-title">文件传输</span>
-          <div class="title-actions">
-            <button type="button" id="btn-close-sftp" title="关闭文件面板">关闭</button>
+      <aside id="util-rail" aria-label="终端工具">
+        <button type="button" id="util-expand-tab" class="util-expand-tab" title="展开工具栏">工具</button>
+        <div class="util-rail-body">
+          <div class="util-tabs" role="tablist">
+            <button type="button" class="util-tab active" data-util="theme" title="主题配色" role="tab">主题</button>
+            <button type="button" class="util-tab" data-util="history" title="历史命令" role="tab">历史</button>
+            <button type="button" class="util-tab" data-util="dict" title="Linux 命令字典" role="tab">字典</button>
+            <button type="button" id="btn-collapse-util" class="util-collapse" title="收起工具栏，把空间留给终端">收起</button>
           </div>
+          <div class="util-search-wrap">
+            <input id="util-search" type="search" placeholder="搜索…" />
+          </div>
+          <div id="util-theme" class="util-panel active"></div>
+          <div id="util-history" class="util-panel"></div>
+          <div id="util-dict" class="util-panel"></div>
         </div>
-        <div id="sftp-split">
-          <div class="file-pane" id="local-pane">
-            <div class="file-toolbar">
-              <span>本地</span>
-              <input id="local-path" />
-              <button type="button" id="local-up" title="上级目录">↑</button>
-              <button type="button" id="local-go">转到</button>
-            </div>
-            <ul id="local-list" class="file-list"></ul>
-          </div>
-          <div class="transfer-actions">
-            <button type="button" id="btn-upload" title="上传选中本地文件 → 远程">⇒</button>
-            <button type="button" id="btn-download" title="下载选中远程文件 → 本地">⇐</button>
-          </div>
-          <div class="file-pane" id="remote-pane">
-            <div class="file-toolbar">
-              <span>远程</span>
-              <input id="remote-path" />
-              <button type="button" id="remote-up" title="上级目录">↑</button>
-              <button type="button" id="remote-go">转到</button>
-            </div>
-            <ul id="remote-list" class="file-list"></ul>
-          </div>
-        </div>
-      </section>
-
-      <div id="term-resize" title="拖动调整高度"></div>
-
-      <section id="term-pane">
-        <div class="pane-title">
-          <span id="term-title">终端</span>
-          <div class="title-actions">
-            <button type="button" id="btn-term-clear">清屏</button>
-            <button type="button" id="btn-close-term" title="关闭终端面板">关闭</button>
-          </div>
-        </div>
-        <div id="terminals">
-          <div id="term-placeholder">未连接终端</div>
-        </div>
-      </section>
+      </aside>
     </div>
   </div>
 
   <dialog id="host-dialog">
     <form method="dialog" id="host-form">
-      <h3 id="dialog-title">主机配置</h3>
-      <label>标识 ID <input name="id" required /></label>
-      <label>显示名称 <input name="name" /></label>
-      <label>主机 / IP <input name="host" required /></label>
-      <label>端口 <input name="port" type="number" value="22" /></label>
-      <label>用户名 <input name="username" required /></label>
-      <label>私钥路径 <input name="privateKeyPath" placeholder="~/.ssh/id_ed25519" /></label>
-      <label>密码 <input name="password" type="password" placeholder="保存在本地 secrets.json" /></label>
-      <label>密钥口令 <input name="passphrase" type="password" /></label>
-      <label>默认目录 <input name="defaultCwd" /></label>
+      <header class="dialog-head">
+        <div>
+          <h3 id="dialog-title">新建主机</h3>
+          <p class="dialog-desc">填写连接详情。密码与口令只保存在本机 `~/.cursor/ssh-mcp/secrets.json`。</p>
+        </div>
+        <button type="button" id="btn-dialog-close" class="btn btn-ghost btn-compact" value="cancel">关闭</button>
+      </header>
+
+      <section class="form-section">
+        <div class="section-title">基本信息</div>
+        <div class="form-grid">
+          <label>标识 ID <span class="req">必填</span>
+            <input name="id" required placeholder="例如 prod-web-01" />
+            <small>唯一标识，保存后不可改</small>
+          </label>
+          <label>显示名称
+            <input name="name" placeholder="例如 生产 Web" />
+            <small>显示在左侧主机卡片</small>
+          </label>
+          <label>主机 / IP <span class="req">必填</span>
+            <input name="host" required placeholder="192.168.1.10 或 example.com" />
+          </label>
+          <label>端口
+            <input name="port" type="number" value="22" min="1" max="65535" />
+          </label>
+          <label>用户名 <span class="req">必填</span>
+            <input name="username" required placeholder="root / ubuntu" />
+          </label>
+          <label>默认目录
+            <input name="defaultCwd" placeholder="/home/ubuntu" />
+            <small>打开 SFTP / 终端时的起始目录</small>
+          </label>
+        </div>
+      </section>
+
+      <section class="form-section">
+        <div class="section-title">认证方式</div>
+        <p class="section-tip">优先使用私钥；没有密钥时再填登录密码。</p>
+        <div class="form-grid">
+          <label class="span-2">私钥路径
+            <input name="privateKeyPath" placeholder="~/.ssh/id_rsa" />
+            <small>本机绝对路径或 ~ 开头路径</small>
+          </label>
+          <label>登录密码
+            <input name="password" type="password" placeholder="仅保存在本机，可留空" autocomplete="new-password" />
+          </label>
+          <label>密钥口令
+            <input name="passphrase" type="password" placeholder="私钥有口令时填写" autocomplete="new-password" />
+          </label>
+        </div>
+      </section>
+
       <div class="dialog-actions">
-        <button value="cancel" type="submit">取消</button>
-        <button id="btn-save-host" value="save" type="submit">保存</button>
-        <button id="btn-delete-host" type="button" class="danger">删除</button>
+        <button id="btn-delete-host" type="button" class="btn btn-danger">删除主机</button>
+        <div class="dialog-actions-right">
+          <button value="cancel" type="submit" class="btn btn-ghost">取消</button>
+          <button id="btn-save-host" value="save" type="submit" class="btn btn-primary">保存主机</button>
+        </div>
       </div>
     </form>
   </dialog>
 
   <script src="/vendor/xterm.js"></script>
   <script src="/vendor/xterm-addon-fit.js"></script>
+  <script src="/linux-commands.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

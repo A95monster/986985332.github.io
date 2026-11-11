@@ -1,8 +1,8 @@
 {
   "name": "cursor-ssh-mcp",
   "displayName": "Cursor SSH (MCP)",
-  "description": "Activity Bar host list + editor SSH workbench (SFTP/terminal) backed by cursor-ssh-mcp.",
-  "version": "1.3.0",
+  "description": "SSH workbench in the editor center: hosts on the left, SFTP/terminal layout on the right.",
+  "version": "1.3.11",
   "publisher": "cursor-ssh-mcp",
   "engines": {
     "vscode": "^1.85.0"
@@ -13,7 +13,7 @@
   "activationEvents": [
     "onView:cursorSshMcp.panel",
     "onCommand:cursorSshMcp.focusPanel",
-    "onCommand:cursorSshMcp.openWorkbench",
+    "onCommand:cursorSshMcp.openEditor",
     "onCommand:cursorSshMcp.openExternal",
     "onCommand:cursorSshMcp.restartUi"
   ],
@@ -33,7 +33,7 @@
         {
           "type": "webview",
           "id": "cursorSshMcp.panel",
-          "name": "SSH",
+          "name": "主机",
           "icon": "media/ssh.svg",
           "retainContextWhenHidden": true
         }
@@ -41,23 +41,23 @@
     },
     "commands": [
       {
-        "command": "cursorSshMcp.focusPanel",
-        "title": "SSH: Focus Panel",
+        "command": "cursorSshMcp.openEditor",
+        "title": "SSH: 在中间打开工作台",
         "category": "SSH"
       },
       {
-        "command": "cursorSshMcp.openWorkbench",
-        "title": "SSH: Open Workbench",
+        "command": "cursorSshMcp.focusPanel",
+        "title": "SSH: 打开工作台",
         "category": "SSH"
       },
       {
         "command": "cursorSshMcp.openExternal",
-        "title": "SSH: Open UI in Browser",
+        "title": "SSH: 在浏览器打开",
         "category": "SSH"
       },
       {
         "command": "cursorSshMcp.restartUi",
-        "title": "SSH: Restart UI Server",
+        "title": "SSH: 重启 UI 服务",
         "category": "SSH"
       }
     ],
