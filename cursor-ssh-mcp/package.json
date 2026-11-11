@@ -1,6 +1,6 @@
 {
   "name": "cursor-ssh-mcp",
-  "version": "1.3.20",
+  "version": "1.3.22",
   "description": "User-level Cursor MCP + Activity Bar SSH panel: saved hosts, key auth, SFTP, terminal",
   "type": "module",
   "bin": {
@@ -14,6 +14,9 @@
     "test:smoke": "node ./scripts/smoke-hosts.js",
     "test:e2e": "node ./scripts/smoke-e2e.mjs",
     "test:delete": "node ./scripts/smoke-delete-host.mjs",
+    "test:ui-mode": "node ./scripts/smoke-ui-mode.mjs",
+    "test:security": "node ./scripts/smoke-security.mjs",
+    "test:all": "npm run test:ui-mode && npm run test:security && npm run test:delete",
     "extension:package": "cd extension && npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository -o ../cursor-ssh-mcp.vsix"
   },
   "engines": {

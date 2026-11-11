@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 中文版：[CHANGELOG.zh-CN.md](./CHANGELOG.zh-CN.md)
 
+## [1.3.22] - 2026-11-11
+
+### Security
+- Local UI HTTP/WebSocket require bearer/cookie token; reject non-loopback Host headers.
+- Unauthorized callers cannot use `/api/*` or `/ws/shell`; passwords never returned; key paths masked in public/MCP lists.
+- Clipboard reads require user paste gesture + rate limit; test hooks gated; `hosts.json`/`ui-token` use `0o600`.
+- `escapeHtml` escapes quotes to reduce attribute XSS.
+
+## [1.3.21] - 2026-11-11
+
+### Added
+- Setting `cursorSshMcp.uiMode`: `auto` / `webview` / `browser` (Windows + macOS).
+- Windows defaults to system browser to avoid Cursor WebView Service Worker errors; macOS can set `browser` too.
+- Status bar SSH entry and browser-mode sidebar launcher.
+
+### Changed
+- Stop auto-opening the workbench WebView when the hosts sidebar loads (reduces dual-webview Service Worker races).
+
 ## [1.3.20] - 2026-11-11
 
 ### Fixed

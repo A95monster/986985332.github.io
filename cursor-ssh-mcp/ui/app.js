@@ -737,11 +737,28 @@ function uiOrigin() {
   return "http://127.0.0.1:3847";
 }
 
+function uiAuthToken() {
+  try {
+    return String(window.__SSH_MCP_UI_TOKEN || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function apiHeaders(extra = {}) {
+  const headers = { "Content-Type": "application/json", ...extra };
+  const token = uiAuthToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
 function api(path, opts = {}) {
   const url = path.startsWith("http") ? path : `${uiOrigin()}${path}`;
+  const headers = apiHeaders(opts.headers || {});
   return fetch(url, {
-    headers: { "Content-Type": "application/json" },
     ...opts,
+    headers,
+    credentials: "same-origin",
   })
     .then(async (res) => {
       const data = await res.json().catch(() => ({}));
@@ -767,7 +784,19 @@ function escapeHtml(s) {
   return String(s)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function isTrustedMessageOrigin(origin) {
+  if (!origin || origin === "null") return true;
+  if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(origin)) return true;
+  if (origin.startsWith("vscode-webview:")) return true;
+  if (/vscode-cdn\.net$/i.test(origin) || /\.vscode-cdn\.net$/i.test(new URL(origin).hostname)) {
+    return true;
+  }
+  return false;
 }
 
 function hostInitial(host) {
@@ -1265,7 +1294,9 @@ function connectTerminal(id, opts = {}) {
   clearConnectTimer(sess);
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws/shell?id=${encodeURIComponent(id)}`);
+  const token = encodeURIComponent(uiAuthToken());
+  const qs = `id=${encodeURIComponent(id)}${token ? `&token=${token}` : ""}`;
+  const ws = new WebSocket(`${proto}://${location.host}/ws/shell?${qs}`);
   sess.ws = ws;
   let settled = false;
 
@@ -3019,6 +3050,16 @@ function setupBus() {
 /* —— 剪贴板：兼容 Cursor iframe / Win / Mac / 各版本 —— */
 let pasteReqSeq = 0;
 const pendingClipboard = new Map();
+/** 仅在用户 Ctrl/Cmd+V 后短窗口内允许向扩展申请读剪贴板 */
+let pasteGateUntil = 0;
+
+function armPasteGate() {
+  pasteGateUntil = Date.now() + 2500;
+}
+
+function pasteGateOpen() {
+  return Date.now() <= pasteGateUntil;
+}
 
 function isEditableField(el) {
   if (!el || el.disabled) return false;
@@ -3079,7 +3120,13 @@ function insertTextIntoField(el, text) {
 function postToExtension(payload) {
   try {
     if (window.parent && window.parent !== window) {
-      window.parent.postMessage({ source: "cursor-ssh-mcp-ui", ...payload }, "*");
+      // 父页是扩展 webview 外壳；用当前 origin 优先，失败再通配
+      const target = location.origin && location.origin !== "null" ? location.origin : "*";
+      try {
+        window.parent.postMessage({ source: "cursor-ssh-mcp-ui", ...payload }, target);
+      } catch {
+        window.parent.postMessage({ source: "cursor-ssh-mcp-ui", ...payload }, "*");
+      }
       return true;
     }
   } catch {
@@ -3102,6 +3149,11 @@ function requestClipboardText() {
       /* Cursor iframe 常拒绝 clipboard API，改走扩展主机 */
     }
 
+    if (!pasteGateOpen()) {
+      resolve("");
+      return;
+    }
+
     const requestId = `cb-r-${++pasteReqSeq}-${Date.now()}`;
     const timer = setTimeout(() => {
       pendingClipboard.delete(requestId);
@@ -3111,7 +3163,7 @@ function requestClipboardText() {
       clearTimeout(timer);
       resolve(typeof payload?.text === "string" ? payload.text : "");
     });
-    if (!postToExtension({ type: "clipboardRead", requestId })) {
+    if (!postToExtension({ type: "clipboardRead", requestId, userGesture: true })) {
       clearTimeout(timer);
       pendingClipboard.delete(requestId);
       resolve("");
@@ -3150,6 +3202,7 @@ function requestClipboardWrite(text) {
 
 function setupPasteSupport() {
   window.addEventListener("message", (event) => {
+    if (!isTrustedMessageOrigin(event.origin)) return;
     const data = event.data;
     if (!data || data.source !== "cursor-ssh-mcp-host") return;
     if (
@@ -3175,6 +3228,7 @@ function setupPasteSupport() {
       if (!isEditableField(el)) return;
       e.preventDefault();
       e.stopPropagation();
+      armPasteGate();
       requestClipboardText().then((text) => {
         if (text) insertTextIntoField(el, text);
       });
@@ -3723,18 +3777,20 @@ function setupUtilRail() {
 }
 
 async function main() {
-  // 自动化测试钩子（仅测试脚本使用）
-  window.__sshMcpTest = {
-    sessionLooksActive,
-    forceOnline(id) {
-      applySessionStatus(id, "online", "");
-    },
-    forceIdle(id) {
-      applySessionStatus(id, "idle", "");
-    },
-    deleteHost,
-    askConfirm,
-  };
+  // 仅 E2E / 明确开启时暴露测试钩子，避免生产页被随便驱动
+  if (window.__SSH_MCP_E2E === true) {
+    window.__sshMcpTest = {
+      sessionLooksActive,
+      forceOnline(id) {
+        applySessionStatus(id, "online", "");
+      },
+      forceIdle(id) {
+        applySessionStatus(id, "idle", "");
+      },
+      deleteHost,
+      askConfirm,
+    };
+  }
 
   setupPasteSupport();
   setupBus();

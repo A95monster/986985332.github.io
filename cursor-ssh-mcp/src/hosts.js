@@ -16,6 +16,11 @@ export function hostsPath() {
 
 function ensureDir() {
   fs.mkdirSync(dataDir(), { recursive: true });
+  try {
+    fs.chmodSync(dataDir(), 0o700);
+  } catch {
+    /* windows may ignore */
+  }
 }
 
 function emptyStore() {
@@ -27,8 +32,16 @@ export function loadHosts() {
   const file = hostsPath();
   if (!fs.existsSync(file)) {
     const store = emptyStore();
-    fs.writeFileSync(file, JSON.stringify(store, null, 2), "utf8");
+    fs.writeFileSync(file, JSON.stringify(store, null, 2), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
     return store;
+  }
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    /* windows */
   }
   const raw = fs.readFileSync(file, "utf8");
   const parsed = JSON.parse(raw);
@@ -41,15 +54,24 @@ export function loadHosts() {
 export function saveHosts(store) {
   ensureDir();
   const tmp = `${hostsPath()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(store, null, 2), "utf8");
+  fs.writeFileSync(tmp, JSON.stringify(store, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   fs.renameSync(tmp, hostsPath());
+  try {
+    fs.chmodSync(hostsPath(), 0o600);
+  } catch {
+    /* windows */
+  }
 }
 
-export function listHostsPublic(secretChecker) {
+export function listHostsPublic(secretChecker, opts = {}) {
   const store = loadHosts();
   return Object.values(store.hosts).map((h) =>
     sanitizeHost(h, {
       hasSecretPassword: secretChecker ? Boolean(secretChecker(h.id)) : false,
+      revealKeyPath: Boolean(opts.revealKeyPath),
     })
   );
 }
@@ -137,6 +159,8 @@ export function expandHome(p) {
 
 export function sanitizeHost(host, opts = {}) {
   const hasSecretPassword = Boolean(opts.hasSecretPassword);
+  const revealKeyPath = Boolean(opts.revealKeyPath);
+  const rawKey = host.privateKeyPath || "";
   return {
     id: host.id,
     name: host.name,
@@ -148,7 +172,13 @@ export function sanitizeHost(host, opts = {}) {
       : host.passwordEnv || hasSecretPassword
         ? "password"
         : "unknown",
-    privateKeyPath: host.privateKeyPath ? maskPath(host.privateKeyPath) : "",
+    // MCP/未授权列表只给脱敏路径；已鉴权 UI 可 reveal 以便编辑
+    privateKeyPath: rawKey
+      ? revealKeyPath
+        ? rawKey
+        : maskPath(rawKey)
+      : "",
+    hasPrivateKey: Boolean(rawKey),
     passwordEnv: host.passwordEnv || "",
     passphraseEnv: host.passphraseEnv || "",
     hasPasswordSecret: hasSecretPassword,
@@ -159,9 +189,19 @@ export function sanitizeHost(host, opts = {}) {
   };
 }
 
-function maskPath(p) {
-  // Keep usable path for the user; keys stay on disk, not in MCP responses as content.
-  return p;
+/** 脱敏本机路径，避免完整 ~/.ssh 布局泄露 */
+export function maskPath(p) {
+  if (!p) return "";
+  let s = String(p).trim();
+  if (!s) return "";
+  const home = os.homedir();
+  if (s === home) return "~";
+  if (s.startsWith(home + path.sep) || s.startsWith(home + "/")) {
+    s = `~${s.slice(home.length)}`;
+  }
+  const parts = s.split(/[/\\]/).filter(Boolean);
+  if (parts.length <= 2) return s;
+  return `${parts[0]}/…/${parts[parts.length - 1]}`;
 }
 
 export function resolveAuth(host, secret = {}) {

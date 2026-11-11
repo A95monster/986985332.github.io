@@ -7,6 +7,24 @@
 
 英文版：[CHANGELOG.md](./CHANGELOG.md)
 
+## [1.3.22] - 2026-11-11
+
+### 安全
+- 本地 UI HTTP/WebSocket 强制 bearer/cookie token；拒绝非本机 Host（防 DNS 重绑定）。
+- 未授权无法调用 `/api/*`、`/ws/shell`；密码不回传；MCP/公开列表脱敏私钥路径。
+- 剪贴板读需用户粘贴手势 + 限流；生产页默认不挂测试钩子；`hosts.json`/`ui-token` 使用 `0o600`。
+- `escapeHtml` 转义引号，降低属性 XSS。
+
+## [1.3.21] - 2026-11-11
+
+### 新增
+- 设置 `cursorSshMcp.uiMode`：`auto` / `webview` / `browser`（Win/macOS 通用）。
+- Windows 默认走系统浏览器，避开 Cursor WebView Service Worker 报错；macOS 也可设为 `browser`。
+- 状态栏「SSH」入口；侧栏浏览器模式启动器。
+
+### 变更
+- 打开主机侧栏时不再自动再开工作台 WebView，降低双 WebView 抢注册 Service Worker 的概率。
+
 ## [1.3.20] - 2026-11-11
 
 ### 修复

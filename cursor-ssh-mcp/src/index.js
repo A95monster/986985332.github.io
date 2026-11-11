@@ -3,9 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
-  dataDir,
   getHost,
-  hostsPath,
   listHostsPublic,
   removeHost,
   upsertHost,
@@ -55,8 +53,9 @@ server.tool(
   async () => {
     try {
       return text({
-        dataDir: dataDir(),
-        hostsFile: hostsPath(),
+        // 不返回本机绝对路径，避免主机清单与密钥布局泄露
+        dataDir: "~/.cursor/ssh-mcp",
+        hostsFile: "~/.cursor/ssh-mcp/hosts.json",
         hosts: listHostsPublic(),
         activeSessions: listSessions(),
       });
@@ -255,12 +254,13 @@ server.tool(
       const listenPort = port || Number(process.env.CURSOR_SSH_MCP_UI_PORT || 3847);
       const info = await startUiServer(listenPort);
       return text({
-        ...info,
+        port: info.port,
+        alreadyRunning: info.alreadyRunning,
         url: getUiUrl(info.port),
         howToOpenPanel:
           "In Cursor: click the SSH icon in the left Activity Bar (or Command Palette → “SSH: Focus Panel”). Drag the sidebar sash to resize; click the icon again or collapse the primary sidebar to hide it. Install the bundled extension from cursor-ssh-mcp/extension if the icon is missing.",
-        sharedDataDir: dataDir(),
-        hostsFile: hostsPath(),
+        sharedDataDir: "~/.cursor/ssh-mcp",
+        hostsFile: "~/.cursor/ssh-mcp/hosts.json",
       });
     } catch (err) {
       return toolError(err);

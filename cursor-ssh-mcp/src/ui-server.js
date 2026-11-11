@@ -19,6 +19,12 @@ import {
   runCommand,
   withConnection,
 } from "./ssh.js";
+import {
+  authCookieHeader,
+  getOrCreateUiToken,
+  isAllowedHostHeader,
+  isAuthorized,
+} from "./ui-auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_ROOT = path.join(__dirname, "..", "ui");
@@ -26,6 +32,8 @@ const DEFAULT_PORT = Number(process.env.CURSOR_SSH_MCP_UI_PORT || 3847);
 
 let serverRef = null;
 let wssRef = null;
+/** @type {string} */
+let uiToken = "";
 /** @type {Map<string, number>} hostId -> open shell websocket count */
 const shellOnline = new Map();
 
@@ -79,6 +87,20 @@ function contentType(filePath) {
   return "application/octet-stream";
 }
 
+function injectHtmlBoot(html) {
+  const e2e =
+    process.env.CURSOR_SSH_MCP_E2E === "1"
+      ? "window.__SSH_MCP_E2E=true;"
+      : "";
+  const boot = `<script>window.__SSH_MCP_UI_TOKEN=${JSON.stringify(
+    uiToken
+  )};${e2e}</script>`;
+  if (html.includes("</head>")) {
+    return html.replace("</head>", `${boot}</head>`);
+  }
+  return boot + html;
+}
+
 function serveStatic(req, res) {
   let urlPath = decodeURIComponent(new URL(req.url, "http://127.0.0.1").pathname);
   // /hosts 与 /work 都返回同一套 UI，由前端按路径切换面板
@@ -94,15 +116,39 @@ function serveStatic(req, res) {
     res.writeHead(404).end("Not found");
     return;
   }
-  res.writeHead(200, {
+  const headers = {
     "Content-Type": contentType(filePath),
     "Cache-Control": "no-store",
-  });
+  };
+  if (urlPath === "/index.html") {
+    const html = injectHtmlBoot(fs.readFileSync(filePath, "utf8"));
+    res.writeHead(200, {
+      ...headers,
+      "Set-Cookie": authCookieHeader(uiToken),
+    });
+    res.end(html);
+    return;
+  }
+  res.writeHead(200, headers);
   fs.createReadStream(filePath).pipe(res);
 }
 
 function hostsForApi() {
-  return listHostsPublic((id) => Boolean(getHostSecret(id).password));
+  return listHostsPublic((id) => Boolean(getHostSecret(id).password), {
+    revealKeyPath: true,
+  });
+}
+
+function requireApiAuth(req, res) {
+  if (!isAllowedHostHeader(req.headers.host)) {
+    json(res, 403, { error: "forbidden host" });
+    return false;
+  }
+  if (!isAuthorized(req, uiToken)) {
+    json(res, 401, { error: "unauthorized" });
+    return false;
+  }
+  return true;
 }
 
 function normalizeCheatTopic(raw) {
@@ -175,11 +221,30 @@ async function handleApi(req, res) {
   const { pathname } = url;
 
   try {
+    // 健康检查：不返回主机信息，供扩展探测端口
+    if (req.method === "GET" && pathname === "/api/health") {
+      return json(res, 200, { ok: true });
+    }
+
+    // 静态资源与首页：先过 Host 校验；HTML 下发 cookie + 注入 token
+    if (!pathname.startsWith("/api/") && !pathname.startsWith("/ws/")) {
+      if (!isAllowedHostHeader(req.headers.host)) {
+        res.writeHead(403).end("Forbidden host");
+        return;
+      }
+      return serveStatic(req, res);
+    }
+
+    if (pathname.startsWith("/api/") && pathname !== "/api/health") {
+      if (!requireApiAuth(req, res)) return;
+    }
+
     if (req.method === "GET" && pathname === "/api/hosts") {
       const sessions = [...new Set([...listSessions(), ...listShellOnline()])];
       return json(res, 200, {
         hosts: hostsForApi(),
         sessions,
+        // 仅返回 home 供本机文件面板；已鉴权
         home: os.homedir(),
       });
     }
@@ -479,16 +544,23 @@ async function handleApi(req, res) {
       return json(res, 200, { path: body.path, mode: body.mode });
     }
 
-    serveStatic(req, res);
+    return json(res, 404, { error: "not found" });
   } catch (err) {
-    json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    const msg = err instanceof Error ? err.message : String(err);
+    // 避免把本机绝对路径细节过度扩散到客户端
+    const safe = msg.replace(os.homedir(), "~");
+    json(res, 400, { error: safe });
   }
 }
 
 function sanitizeWithSecret(id) {
   const host = getHost(id);
   const secret = getHostSecret(id);
-  return listHostsPublic(() => Boolean(secret.password)).find((h) => h.id === id) || host;
+  return (
+    listHostsPublic(() => Boolean(secret.password), { revealKeyPath: true }).find(
+      (h) => h.id === id
+    ) || host
+  );
 }
 
 function modeToPerm(mode, isDir) {
@@ -1465,6 +1537,10 @@ function attachShellWs(server) {
   const wss = new WebSocketServer({ server, path: "/ws/shell" });
   wss.on("connection", async (ws, req) => {
     try {
+      if (!isAllowedHostHeader(req.headers.host) || !isAuthorized(req, uiToken)) {
+        ws.close(1008, "unauthorized");
+        return;
+      }
       const url = new URL(req.url, "http://127.0.0.1");
       const id = url.searchParams.get("id");
       if (!id) {
@@ -1602,7 +1678,7 @@ function probeLocalUi(port) {
       {
         host: "127.0.0.1",
         port,
-        path: "/api/hosts",
+        path: "/api/health",
         timeout: 600,
       },
       (res) => {
@@ -1619,13 +1695,15 @@ function probeLocalUi(port) {
 }
 
 export async function startUiServer(port = DEFAULT_PORT) {
+  uiToken = getOrCreateUiToken();
+
   if (serverRef) {
-    return { url: getUiUrl(port), port, alreadyRunning: true };
+    return { url: getUiUrl(port), port, alreadyRunning: true, token: uiToken };
   }
 
   // Another process (Cursor extension) may already own the port.
   if (await probeLocalUi(port)) {
-    return { url: getUiUrl(port), port, alreadyRunning: true };
+    return { url: getUiUrl(port), port, alreadyRunning: true, token: uiToken };
   }
 
   await new Promise((resolve, reject) => {
@@ -1638,7 +1716,12 @@ export async function startUiServer(port = DEFAULT_PORT) {
     });
   });
 
-  return { url: getUiUrl(port), port, alreadyRunning: false };
+  return { url: getUiUrl(port), port, alreadyRunning: false, token: uiToken };
+}
+
+export function getUiAuthToken() {
+  if (!uiToken) uiToken = getOrCreateUiToken();
+  return uiToken;
 }
 
 export function stopUiServer() {
