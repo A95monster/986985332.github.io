@@ -2,7 +2,7 @@
   "name": "cursor-ssh-mcp",
   "displayName": "Cursor SSH (MCP)",
   "description": "SSH workbench in the editor center: hosts on the left, SFTP/terminal layout on the right.",
-  "version": "1.3.11",
+  "version": "1.3.18",
   "publisher": "cursor-ssh-mcp",
   "engines": {
     "vscode": "^1.85.0"

@@ -1,6 +1,6 @@
 {
   "name": "cursor-ssh-mcp",
-  "version": "1.3.11",
+  "version": "1.3.18",
   "description": "User-level Cursor MCP + Activity Bar SSH panel: saved hosts, key auth, SFTP, terminal",
   "type": "module",
   "bin": {
@@ -12,6 +12,7 @@
     "start": "node ./src/index.js",
     "ui": "node ./src/ui-cli.js",
     "test:smoke": "node ./scripts/smoke-hosts.js",
+    "test:e2e": "node ./scripts/smoke-e2e.mjs",
     "extension:package": "cd extension && npx --yes @vscode/vsce package --no-dependencies --allow-missing-repository -o ../cursor-ssh-mcp.vsix"
   },
   "engines": {
@@ -30,14 +31,37 @@
     "ui",
     "extension",
     "examples",
-    "README.md"
+    "scripts",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "CHANGELOG.zh-CN.md",
+    "CONTRIBUTING.md",
+    "CONTRIBUTING.zh-CN.md",
+    "SECURITY.md",
+    "SECURITY.zh-CN.md",
+    "LICENSE"
   ],
   "keywords": [
     "cursor",
     "mcp",
     "ssh",
     "termius",
-    "sftp"
+    "sftp",
+    "xterm"
   ],
-  "license": "MIT"
+  "author": "A95monster",
+  "license": "MIT",
+  "homepage": "https://github.com/A95monster/986985332.github.io/tree/cursor/ssh-mcp-user-level-b084/cursor-ssh-mcp",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/A95monster/986985332.github.io.git",
+    "directory": "cursor-ssh-mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/A95monster/986985332.github.io/issues"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.1"
+  }
 }

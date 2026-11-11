@@ -1,195 +1,249 @@
 # cursor-ssh-mcp
 
-Termius / IDEA 风格的 **user-level** SSH 工具：保存主机、密钥/密码认证、远程 Shell、SFTP。
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
+[![Version](https://img.shields.io/badge/version-1.3.18-blue.svg)](./CHANGELOG.md)
+[![Keep a Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-orange.svg)](./CHANGELOG.md)
 
-由两部分组成，**共用同一份用户级配置**：
+> **中文文档：** [README.zh-CN.md](./README.zh-CN.md) · [贡献指南](./CONTRIBUTING.zh-CN.md) · [安全说明](./SECURITY.zh-CN.md)
 
-| 组件 | 作用 |
-|------|------|
-| **MCP server** (`src/index.js`) | 给 Agent 调用的工具（`ssh_run`、`ssh_list_hosts` 等） |
-| **Cursor 扩展** (`extension/`) | 左侧 Activity Bar **主机列表** + 中间编辑器 **SSH 工作台**（SFTP / 终端） |
+A **user-level** SSH workbench for [Cursor](https://cursor.com) — Termius / JetBrains-style hosts, dual-pane SFTP, xterm shell, and MCP tools for the Agent.
 
-> **重要：** Cursor 的用户级 MCP 写在本机 `~/.cursor/mcp.json`，**不会**随 Cursor 账号在多台电脑间自动同步。Skills 可选择同步到 Cloud Agents；MCP 不会。Mac / Windows 需各自安装，配置可手工同步。
+| Piece | What it does |
+|-------|----------------|
+| **MCP server** (`src/index.js`) | Agent tools: `ssh_run`, `ssh_list_hosts`, … |
+| **Cursor extension** (`extension/`) | Activity Bar **Hosts** + editor **SSH Workbench** |
 
-官方说明：[Cursor MCP docs](https://cursor.com/docs/mcp)  
-- 项目级：`.cursor/mcp.json`  
-- 用户级：`~/.cursor/mcp.json`（Windows：`%USERPROFILE%\.cursor\mcp.json`）
+Both share the same on-disk config under `~/.cursor/ssh-mcp/`.
 
-手机 / Cloud Agents 使用**另一套** MCP 注册表，看不到本机 stdio SSH MCP，除非另行发布可网络访问的 MCP。见 [Cursor for iOS](https://cursor.com/docs/cloud-agent/mobile)。
+---
 
-## 面板交互（v1.3.0：侧栏主机 + 编辑器工作台）
+## Table of contents
 
-1. 安装扩展后，左侧 Activity Bar 出现 **SSH** 图标。  
-2. 点击图标 → 左侧只加载主机列表（`/?panel=hosts`），并自动打开中间编辑器 **SSH 工作台**（`/?panel=work`：SFTP + 终端）。  
-3. 主机卡片与工作台通过 `BroadcastChannel` + `localStorage` 同步当前选中主机。  
-4. **拖拽侧栏分隔条**即可调整宽度；再点图标或折叠主侧栏即可收起。  
-5. 命令面板：`SSH: Focus Panel` / `SSH: Open Workbench` / `SSH: Open UI in Browser` / `SSH: Restart UI Server`。  
-6. UI 进程监听 `127.0.0.1:3847`（可用 `CURSOR_SSH_MCP_UI_PORT` / 设置 `cursorSshMcp.uiPort` 修改）。MCP 工具 `ssh_open_ui` 也会拉起同一服务。  
-7. 浏览器可打开 `/?panel=all` 或预览页 `/preview-layout.html`（hosts | work 双 iframe）。
+- [Features](#features)
+- [Architecture](#architecture)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [MCP tools](#mcp-tools)
+- [Scripts](#scripts)
+- [Project layout](#project-layout)
+- [Security](#security)
+- [Contributing](#contributing)
+- [Changelog](#changelog)
+- [License](#license)
 
-主机与密钥材料默认存放：
+---
+
+## Features
+
+- **Host manager** — add / edit / delete hosts; open **Files**, **Terminal**, or click the card for the default split (files on top, terminal below)
+- **Session status** — interactive status pill (connect / disconnect / retry); host list stays in sync with the workbench
+- **Dual-pane SFTP** — local ↔ remote or host ↔ host; sort, filter, breadcrumbs, column resize, hidden files toggle
+- **Transfers** — files **and folders** (recursive); adaptive concurrency (≈8–12 small files); live progress & speed
+- **Name conflicts** — dialog: **Replace** / **Save as `name2`** / **Cancel**
+- **Delete** — remote recursive delete with clear errors
+- **Workbench layout** — per-pane fullscreen; swap files/terminal; drag to resize; sessions survive pane hide / mode switch
+- **Terminal** — themes, fonts, collapsible util rail (theme / history / Linux dictionary)
+- **Connection UX** — failure dialogs for timeout, auth, refused, unreachable
+- **MCP** — run commands and manage hosts from Cursor chat
+
+---
+
+## Architecture
+
+```text
+┌──────────────── Cursor Desktop ────────────────┐
+│  Activity Bar          Editor                   │
+│  ┌──────────┐          ┌─────────────────────┐  │
+│  │ Hosts    │  bus +   │ SSH Workbench       │  │
+│  │ webview  │ localStorage  SFTP + Terminal  │  │
+│  └────┬─────┘          └──────────┬──────────┘  │
+│       │  iframe → 127.0.0.1:3847  │             │
+└───────┼───────────────────────────┼─────────────┘
+        └─────────────┬─────────────┘
+                      ▼
+              UI server (Node)  ←→  SSH / SFTP (ssh2)
+                      ▲
+              MCP stdio (Agent tools)
+```
+
+- Hosts and Workbench are **separate pages** (`/hosts`, `/work`) synced via `BroadcastChannel` + `localStorage`.
+- Opening the workbench again **does not reload** an existing tab (keeps the terminal WebSocket alive).
+
+---
+
+## Requirements
+
+- **Node.js** 18+
+- **Cursor Desktop** (extension + user-level MCP)
+- SSH reachability to your servers (keys recommended)
+
+---
+
+## Quick start
+
+```bash
+git clone https://github.com/A95monster/986985332.github.io.git
+cd 986985332.github.io/cursor-ssh-mcp
+npm install
+```
+
+### 1. User-level MCP (Agent)
+
+Edit `~/.cursor/mcp.json` (see `examples/mcp.mac.json` / `examples/mcp.windows.json`):
+
+```json
+{
+  "mcpServers": {
+    "cursor-ssh-mcp": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/cursor-ssh-mcp/src/index.js"],
+      "env": {
+        "CURSOR_SSH_MCP_HOME": "${userHome}/.cursor/ssh-mcp",
+        "CURSOR_SSH_MCP_UI_PORT": "3847"
+      }
+    }
+  }
+}
+```
+
+Reload MCP in Cursor, then ask the Agent to call `ssh_list_hosts` or `ssh_open_ui`.
+
+### 2. Cursor extension (UI)
+
+```bash
+npm run extension:package
+```
+
+Cursor → **Extensions: Install from VSIX…** → `cursor-ssh-mcp.vsix` → **Developer: Reload Window**.
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `cursorSshMcp.uiPort` | `3847` | Local UI HTTP port |
+| `cursorSshMcp.packageRoot` | _(empty)_ | Absolute path to this package |
+
+### 3. UI only (browser debug)
+
+```bash
+npm run ui
+# http://127.0.0.1:3847/hosts
+# http://127.0.0.1:3847/work
+```
+
+---
+
+## Configuration
+
+### Data directory
 
 ```text
 ~/.cursor/ssh-mcp/hosts.json
-~/.cursor/ssh-mcp/secrets.json   # 0600，UI 写入的密码/口令
+~/.cursor/ssh-mcp/secrets.json   # mode 0600; passwords / passphrases from the UI
 ```
 
-可用环境变量 `CURSOR_SSH_MCP_HOME` 覆盖目录。
+Override root with `CURSOR_SSH_MCP_HOME`.
 
-**不要把明文密码写进 `hosts.json`。** Agent 侧请用 `passwordEnv` / `passphraseEnv`；面板 UI 会把密码存在 `secrets.json`。
+**Do not put plaintext passwords in `hosts.json`.** Prefer SSH keys, or let the UI store secrets in `secrets.json`.
 
-## MCP Tools
+> Cursor does **not** sync user-level MCP config across machines. Copy templates and sync `~/.cursor/ssh-mcp/` privately if needed.
+
+### Environment
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CURSOR_SSH_MCP_HOME` | `~/.cursor/ssh-mcp` | Config + secrets root |
+| `CURSOR_SSH_MCP_UI_PORT` | `3847` | UI server port |
+
+---
+
+## Usage
+
+1. Open the **SSH** icon in the Activity Bar.
+2. Add a host (key path or password).
+3. Click the **card** → default split (files + terminal), or use **文件 / 终端**.
+4. Use the **status pill** to connect / disconnect / retry (hover shows the action).
+5. In SFTP: drag or right-click **复制到对侧**; folders are recursive; conflicts ask Replace / Save-as / Cancel.
+6. Fullscreen a pane, swap stack order, or drag the splitter — switching modes does **not** drop the SSH session.
+
+---
+
+## MCP tools
 
 | Tool | Purpose |
 |------|---------|
-| `ssh_list_hosts` | 列出已保存主机 + 活动会话 |
-| `ssh_upsert_host` | 新增/更新主机 |
-| `ssh_remove_host` | 删除主机 |
-| `ssh_test_connection` | 连通性/认证检查 |
-| `ssh_run` | 远程执行命令 |
-| `ssh_close_session` | 关闭 keep-alive 会话 |
-| `ssh_read_file` / `ssh_write_file` | 小文件 SFTP 读写 |
-| `ssh_open_ui` | 启动本地 UI（供侧栏 / 浏览器使用） |
+| `ssh_list_hosts` | List saved hosts + sessions |
+| `ssh_upsert_host` | Create / update a host |
+| `ssh_remove_host` | Remove a host |
+| `ssh_test_connection` | Connectivity / auth check |
+| `ssh_run` | Run a remote command |
+| `ssh_close_session` | Close a keep-alive session |
+| `ssh_read_file` / `ssh_write_file` | Small-file SFTP I/O |
+| `ssh_open_ui` | Start the local UI server |
 
 ---
 
-## Install (Mac)
+## Scripts
 
 ```bash
-# 1) 克隆或拷贝到稳定路径
-git clone <this-repo> ~/Projects/986985332.github.io
-cd ~/Projects/986985332.github.io/cursor-ssh-mcp
-npm install
+npm start                 # MCP server (stdio)
+npm run ui                # UI HTTP server
+npm run test:smoke        # Hosts API smoke (no SSH required)
+npm run test:e2e          # Playwright UI smoke (optional browsers)
+npm run extension:package # Build cursor-ssh-mcp.vsix
 
-# 2) Node 18+
-node -v
+# Install helpers
+./scripts/install-mcp.sh      # macOS / Linux → ~/.cursor/mcp.json
+./scripts/install-mac.sh
+./scripts/install-mcp.ps1     # Windows
 ```
-
-### A. 用户级 MCP（Agent 工具，两台机器共用同一段配置模板）
-
-创建或编辑 `~/.cursor/mcp.json`（可参考 `examples/mcp.mac.json`）：
-
-```json
-{
-  "mcpServers": {
-    "cursor-ssh-mcp": {
-      "command": "node",
-      "args": ["/Users/YOUR_NAME/Projects/986985332.github.io/cursor-ssh-mcp/src/index.js"],
-      "env": {
-        "CURSOR_SSH_MCP_HOME": "${userHome}/.cursor/ssh-mcp",
-        "CURSOR_SSH_MCP_UI_PORT": "3847"
-      }
-    }
-  }
-}
-```
-
-重启 Cursor（或 Reload MCP）。在对话里让 Agent 调用 `ssh_list_hosts` / `ssh_open_ui`。
-
-### B. 侧栏扩展（可拖拽 / 可折叠面板）
-
-```bash
-cd ~/Projects/986985332.github.io/cursor-ssh-mcp
-npm run extension:package
-# 生成 cursor-ssh-mcp.vsix
-```
-
-在 Cursor 中：
-
-1. Command Palette → **Extensions: Install from VSIX…** → 选中 `cursor-ssh-mcp.vsix`  
-2. 或开发模式：`Extensions: Install from Location…` / 打开 `extension` 文件夹后 **Developer: Reload Window**  
-3. 左侧 Activity Bar 点 **SSH** 图标；拖分隔条调宽，再点图标收起  
-
-可选设置：
-
-- `cursorSshMcp.uiPort`（默认 3847）  
-- `cursorSshMcp.packageRoot`（若扩展与包目录分离，填 `cursor-ssh-mcp` 绝对路径）
-
-添加主机示例：
-
-- 在侧栏点 `+`，或  
-- 让 Cursor：`用 ssh_upsert_host 添加主机 id=home-nas, host=192.168.1.10, username=admin, privateKeyPath=~/.ssh/id_ed25519`  
-- 或编辑 `~/.cursor/ssh-mcp/hosts.json`（模板见 `examples/hosts.example.json`）
 
 ---
 
-## Install (Windows)
+## Project layout
 
-1. 安装 [Node.js 18+](https://nodejs.org/)（确保 `node` 在 PATH）。  
-2. 将 `cursor-ssh-mcp` 放到例如 `C:\Users\YOUR_NAME\cursor-ssh-mcp`。  
-3. 在该目录执行：
-
-```powershell
-npm install
-npm run extension:package
+```text
+cursor-ssh-mcp/
+├── src/                 # MCP + UI HTTP/WebSocket server
+├── ui/                  # Workbench front-end
+├── extension/           # Cursor VSIX source
+├── examples/            # mcp.json / hosts samples
+├── scripts/             # install + smoke / e2e
+├── README.md            # English (this file)
+├── README.zh-CN.md      # 简体中文
+├── CHANGELOG.md
+├── CHANGELOG.zh-CN.md
+├── CONTRIBUTING.md
+├── CONTRIBUTING.zh-CN.md
+├── SECURITY.md
+├── SECURITY.zh-CN.md
+└── LICENSE
 ```
-
-4. 创建 `%USERPROFILE%\.cursor\mcp.json`（参考 `examples/mcp.windows.json`）：
-
-```json
-{
-  "mcpServers": {
-    "cursor-ssh-mcp": {
-      "command": "node",
-      "args": ["C:\\Users\\YOUR_NAME\\cursor-ssh-mcp\\src\\index.js"],
-      "env": {
-        "CURSOR_SSH_MCP_HOME": "${userHome}/.cursor/ssh-mcp",
-        "CURSOR_SSH_MCP_UI_PORT": "3847"
-      }
-    }
-  }
-}
-```
-
-5. Cursor → **Extensions: Install from VSIX…** → 安装生成的 `cursor-ssh-mcp.vsix`。  
-6. 私钥放在例如 `C:\Users\YOUR_NAME\.ssh\id_ed25519`，在 `privateKeyPath` 中引用（JSON 字符串里可用正斜杠或转义反斜杠）。  
-7. 重启 Cursor Desktop；左侧点 **SSH** 打开可拖拽侧栏；Agent 侧用 `ssh_list_hosts` 验证。
 
 ---
 
-## 保持用户级 MCP / 主机配置同步（手工）
+## Security
 
-Cursor 账号登录 **不会** 在 Mac ↔ Windows 之间复制 `mcp.json`、扩展或本服务。
+See [SECURITY.md](./SECURITY.md) / [SECURITY.zh-CN.md](./SECURITY.zh-CN.md).
 
-推荐流程：
+Highlights:
 
-1. **服务代码放在 git**（本仓库 `cursor-ssh-mcp/`），每台机器 `git pull` + `npm install`（需要时再 `npm run extension:package`）。  
-2. **主机与密钥材料私密同步**（勿提交到公开仓库）：  
-   - 用 iCloud / OneDrive / Syncthing（最好加密）同步 `~/.cursor/ssh-mcp/`，或  
-   - 在每台机器上用侧栏 / `ssh_upsert_host` 重新添加主机。  
-3. **`mcp.json` 片段保持一致**；只需按系统改 `args` 绝对路径。  
-4. **私钥留在本机**（`~/.ssh` / `%USERPROFILE%\.ssh`），不要提交。  
-5. 模板：`examples/mcp.mac.json`、`examples/mcp.windows.json`。
+- Prefer SSH keys; protect keys and `secrets.json` (`chmod 600`).
+- Approve MCP tool calls in Cursor unless you explicitly allowlist them.
+- This stdio MCP only runs on the machine where Cursor Desktop is open.
 
-新机器检查清单：
+---
 
-- [ ] 安装 Node 18+  
-- [ ] `git pull` + `npm install`  
-- [ ] 写入用户级 `mcp.json`（正确绝对路径）  
-- [ ] 安装 / 更新 SSH 扩展 VSIX  
-- [ ] 同步 `hosts.json` / `secrets.json` 或重新添加主机  
-- [ ] 私钥路径可用  
-- [ ] 重启 Cursor → 侧栏 SSH + `ssh_list_hosts` / `ssh_test_connection`
+## Contributing
 
-## 仅启动 UI（调试）
+See [CONTRIBUTING.md](./CONTRIBUTING.md) / [CONTRIBUTING.zh-CN.md](./CONTRIBUTING.zh-CN.md).
 
-```bash
-cd cursor-ssh-mcp
-npm run ui
-# 浏览器打开 http://127.0.0.1:3847/
-```
+## Changelog
 
-## Security notes
+[CHANGELOG.md](./CHANGELOG.md) · [CHANGELOG.zh-CN.md](./CHANGELOG.zh-CN.md)  
+Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · [SemVer](https://semver.org/).
 
-- 优先 SSH 密钥，少用密码。  
-- Mac/Linux：`chmod 600` 私钥与 `secrets.json`。  
-- 在 Cursor 中审批 MCP 工具调用（除非你显式加入允许列表）。  
-- 本机 stdio MCP 只在打开 Cursor Desktop 的那台机器上可用；手机 Cloud Agents 默认不可用。
+## License
 
-## Smoke test（无需真实 SSH）
-
-```bash
-cd cursor-ssh-mcp
-npm install
-npm run test:smoke
-```
+[MIT](./LICENSE) © A95monster

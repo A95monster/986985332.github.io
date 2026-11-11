@@ -271,14 +271,24 @@ body[data-panel="all"] #work-row {
   border-top: 1px solid var(--line);
 }
 .title-actions,
-.panel-actions,
-.host-actions {
+.panel-actions {
   display: flex;
   gap: 6px;
   align-items: center;
   flex-wrap: wrap;
 }
-
+.host-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  align-items: stretch;
+}
+.host-actions .btn {
+  width: 100%;
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
 #host-list {
   list-style: none;
   margin: 0;
@@ -360,6 +370,7 @@ body[data-panel="all"] #work-row {
   flex: 0 0 auto;
   background: var(--bg-soft);
   color: var(--ink-soft);
+  line-height: 1.2;
 }
 .status-pill::before {
   content: "";
@@ -367,11 +378,42 @@ body[data-panel="all"] #work-row {
   height: 6px;
   border-radius: 50%;
   background: currentColor;
+  flex: 0 0 auto;
 }
 .status-pill.idle { color: #64748b; background: #eef2f0; }
 .status-pill.connecting { color: #b45309; background: #fff7ed; }
 .status-pill.online { color: #047857; background: #ecfdf5; }
 .status-pill.error { color: #b91c1c; background: #fef2f2; }
+
+button.status-pill,
+.status-btn {
+  appearance: none;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+  transition: background 140ms var(--ease), color 140ms var(--ease), transform 140ms var(--ease);
+}
+.status-btn .status-action { display: none; }
+.status-btn:hover .status-label { display: none; }
+.status-btn:hover .status-action { display: inline; }
+.status-btn:hover { transform: translateY(-0.5px); }
+.status-btn:focus-visible {
+  outline: 2px solid rgba(15, 118, 110, 0.35);
+  outline-offset: 2px;
+}
+.status-btn.online:hover {
+  color: #b91c1c;
+  background: #fef2f2;
+}
+.status-btn.connecting:hover {
+  color: #b91c1c;
+  background: #fef2f2;
+}
+.status-btn.idle:hover,
+.status-btn.error:hover {
+  color: #047857;
+  background: #ecfdf5;
+}
 
 .empty-state {
   margin: 18px 14px;
@@ -393,6 +435,12 @@ body[data-panel="all"] #work-row {
   flex-direction: column;
   gap: 0;
 }
+#main-split.stack-term-top #term-pane { order: 1; }
+#main-split.stack-term-top #panel-resize { order: 2; }
+#main-split.stack-term-top #sftp-pane { order: 3; }
+#main-split.stack-sftp-top #sftp-pane { order: 1; }
+#main-split.stack-sftp-top #panel-resize { order: 2; }
+#main-split.stack-sftp-top #term-pane { order: 3; }
 
 .panel-card {
   min-height: 0;
@@ -458,9 +506,14 @@ body[data-panel="all"] #work-row {
 }
 
 #panel-resize {
-  height: 10px;
+  height: 18px;
   cursor: row-resize;
   position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  user-select: none;
 }
 #panel-resize::before {
   content: "";
@@ -472,10 +525,29 @@ body[data-panel="all"] #work-row {
   transform: translate(-50%, -50%);
   border-radius: 999px;
   background: rgba(15, 118, 110, 0.35);
+  pointer-events: none;
 }
 #panel-resize:hover::before {
   width: 72px;
   background: var(--accent);
+}
+.btn-swap-panes {
+  appearance: none;
+  position: relative;
+  z-index: 1;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.92);
+  color: var(--ink-soft);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-swap-panes:hover {
+  color: var(--accent-ink);
+  border-color: rgba(15, 118, 110, 0.35);
 }
 
 #sftp-pane {
@@ -777,6 +849,48 @@ body.col-resizing * {
   width: min(420px, calc(100vw - 32px));
   box-shadow: 0 20px 50px rgba(15, 23, 42, 0.28);
 }
+.app-modal-wide {
+  width: min(520px, calc(100vw - 32px));
+}
+.app-modal-hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.conflict-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.55);
+  max-height: 160px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+}
+.conflict-list li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.conflict-list .conflict-name {
+  color: var(--ink);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conflict-list .conflict-saveas {
+  color: var(--ink-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.conflict-actions {
+  flex-wrap: wrap;
+}
 .app-modal::backdrop {
   background: rgba(15, 23, 42, 0.35);
 }
@@ -794,8 +908,11 @@ body.col-resizing * {
   margin: 0;
   color: var(--ink-soft);
   font-size: 13px;
-  line-height: 1.4;
+  line-height: 1.5;
   white-space: pre-wrap;
+  word-break: break-word;
+  max-height: min(40vh, 280px);
+  overflow: auto;
 }
 .app-modal-form input[type="text"] {
   width: 100%;

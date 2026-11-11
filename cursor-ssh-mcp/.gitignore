@@ -1,7 +1,35 @@
+# Dependencies
 node_modules/
+
+# Build / packages
 *.vsix
-.DS_Store
+dist/
+out/
+
+# Logs & env
 *.log
+npm-debug.log*
 .env
 .env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Local test / automation artifacts
 .playwright-cli/
+**/.playwright-cli/
+/tmp/
+coverage/
+
+# Secrets (never commit)
+secrets.json
+hosts.local.json
+*.pem
+*.key
+id_rsa
+id_ed25519

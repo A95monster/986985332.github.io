@@ -26,6 +26,24 @@ const DEFAULT_PORT = Number(process.env.CURSOR_SSH_MCP_UI_PORT || 3847);
 
 let serverRef = null;
 let wssRef = null;
+/** @type {Map<string, number>} hostId -> open shell websocket count */
+const shellOnline = new Map();
+
+function markShellOnline(id) {
+  if (!id) return;
+  shellOnline.set(id, (shellOnline.get(id) || 0) + 1);
+}
+
+function markShellOffline(id) {
+  if (!id) return;
+  const n = (shellOnline.get(id) || 0) - 1;
+  if (n <= 0) shellOnline.delete(id);
+  else shellOnline.set(id, n);
+}
+
+function listShellOnline() {
+  return [...shellOnline.keys()];
+}
 
 function json(res, status, body) {
   const payload = JSON.stringify(body);
@@ -158,9 +176,10 @@ async function handleApi(req, res) {
 
   try {
     if (req.method === "GET" && pathname === "/api/hosts") {
+      const sessions = [...new Set([...listSessions(), ...listShellOnline()])];
       return json(res, 200, {
         hosts: hostsForApi(),
-        sessions: listSessions(),
+        sessions,
         home: os.homedir(),
       });
     }
@@ -339,7 +358,7 @@ async function handleApi(req, res) {
       return json(res, 200, result);
     }
 
-    // 主机 A → 主机 B（经本机临时文件中转，流式）
+    // 主机 A → 主机 B（经本机临时文件中转，流式；单文件兼容）
     if (req.method === "POST" && pathname === "/api/transfer/relay") {
       const body = await readBody(req);
       const fromHost = getHost(body.fromId);
@@ -347,30 +366,64 @@ async function handleApi(req, res) {
       if (fromHost.id === toHost.id && body.fromPath === body.toPath) {
         throw new Error("源与目标相同");
       }
-      const tmp = path.join(
-        os.tmpdir(),
-        `ssh-mcp-relay-${Date.now()}-${Math.random().toString(16).slice(2)}`
-      );
-      try {
-        await withConnection(fromHost, true, (conn) =>
-          sftpDownloadStream(conn, body.fromPath, tmp)
-        );
-        const written = await withConnection(toHost, true, (conn) =>
-          sftpUploadStream(conn, tmp, body.toPath)
-        );
-        return json(res, 200, {
-          fromId: fromHost.id,
-          toId: toHost.id,
-          toPath: body.toPath,
-          bytes: written.bytesWritten || written.bytes || 0,
+      const wantStream = String(req.headers.accept || "").includes("ndjson") || body.stream === true;
+      const items = [{ fromPath: body.fromPath, toPath: body.toPath }];
+      if (wantStream) {
+        res.writeHead(200, {
+          "Content-Type": "application/x-ndjson; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Accel-Buffering": "no",
         });
-      } finally {
+        const writeEvent = (obj) => {
+          if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`);
+        };
         try {
-          fs.unlinkSync(tmp);
-        } catch {
-          /* ignore */
+          const result = await sftpRelayBatch(fromHost, toHost, items, { onEvent: writeEvent });
+          writeEvent({ type: "done", ...result });
+        } catch (err) {
+          writeEvent({
+            type: "error",
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
+        res.end();
+        return;
       }
+      const result = await sftpRelayBatch(fromHost, toHost, items, {});
+      return json(res, 200, result);
+    }
+
+    // 主机 A → 主机 B 批量（支持目录，并发中转）
+    if (req.method === "POST" && pathname === "/api/transfer/relay-batch") {
+      const body = await readBody(req);
+      const fromHost = getHost(body.fromId);
+      const toHost = getHost(body.toId);
+      const files = Array.isArray(body.files) ? body.files : [];
+      if (!files.length) throw new Error("没有待中转文件");
+      const wantStream = String(req.headers.accept || "").includes("ndjson") || body.stream === true;
+      if (wantStream) {
+        res.writeHead(200, {
+          "Content-Type": "application/x-ndjson; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Accel-Buffering": "no",
+        });
+        const writeEvent = (obj) => {
+          if (!res.writableEnded) res.write(`${JSON.stringify(obj)}\n`);
+        };
+        try {
+          const result = await sftpRelayBatch(fromHost, toHost, files, { onEvent: writeEvent });
+          writeEvent({ type: "done", ...result });
+        } catch (err) {
+          writeEvent({
+            type: "error",
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        res.end();
+        return;
+      }
+      const result = await sftpRelayBatch(fromHost, toHost, files, {});
+      return json(res, 200, result);
     }
 
     if (req.method === "POST" && pathname === "/api/fs/mkdir") {
@@ -533,6 +586,142 @@ function getSftp(conn) {
   });
 }
 
+function walkLocalFiles(rootDir) {
+  /** @type {{ localPath: string, relPath: string, size: number }[]} */
+  const files = [];
+  /** @type {string[]} */
+  const dirs = [];
+  const walk = (abs, rel) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(abs, { withFileTypes: true });
+    } catch (err) {
+      throw new Error(`无法读取本地目录: ${abs} (${err instanceof Error ? err.message : String(err)})`);
+    }
+    for (const d of entries) {
+      if (d.name === "." || d.name === "..") continue;
+      const childAbs = path.join(abs, d.name);
+      const childRel = rel ? `${rel}/${d.name}` : d.name;
+      let isDir = d.isDirectory();
+      let isFile = d.isFile();
+      if (d.isSymbolicLink()) {
+        try {
+          const st = fs.statSync(childAbs);
+          isDir = st.isDirectory();
+          isFile = st.isFile();
+        } catch {
+          continue;
+        }
+      }
+      if (isDir) {
+        dirs.push(childRel);
+        walk(childAbs, childRel);
+      } else if (isFile) {
+        let size = 0;
+        try {
+          size = fs.statSync(childAbs).size || 0;
+        } catch {
+          size = 0;
+        }
+        files.push({ localPath: childAbs, relPath: childRel, size });
+      }
+    }
+  };
+  walk(rootDir, "");
+  return { files, dirs };
+}
+
+function sftpMkdirp(sftp, remotePath) {
+  const normalized = String(remotePath || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalized || normalized === "/" || normalized === ".") {
+    return Promise.resolve();
+  }
+  const parts = normalized.split("/").filter(Boolean);
+  const isAbs = normalized.startsWith("/");
+  return new Promise((resolve, reject) => {
+    let i = 0;
+    let current = isAbs ? "" : ".";
+    const next = () => {
+      if (i >= parts.length) return resolve();
+      current = current === "." ? parts[i] : `${current}/${parts[i]}`;
+      if (isAbs && !current.startsWith("/")) current = `/${current}`;
+      i += 1;
+      sftp.mkdir(current, (err) => {
+        // 已存在则忽略
+        if (err && err.code !== 4 && !/Failure|exists|already/i.test(String(err.message || err))) {
+          // ssh2 often uses code 4 for failure when dir exists; also try stat
+          sftp.stat(current, (stErr, st) => {
+            if (!stErr && st && st.isDirectory()) return next();
+            reject(err);
+          });
+          return;
+        }
+        next();
+      });
+    };
+    next();
+  });
+}
+
+function sftpReaddir(sftp, remotePath) {
+  return new Promise((resolve, reject) => {
+    sftp.readdir(remotePath, (err, list) => (err ? reject(err) : resolve(list || [])));
+  });
+}
+
+function sftpStat(sftp, remotePath) {
+  return new Promise((resolve, reject) => {
+    sftp.stat(remotePath, (err, st) => (err ? reject(err) : resolve(st)));
+  });
+}
+
+async function walkRemoteFiles(sftp, rootDir) {
+  /** @type {{ remotePath: string, relPath: string, size: number }[]} */
+  const files = [];
+  /** @type {string[]} */
+  const dirs = [];
+  const walk = async (abs, rel) => {
+    const list = await sftpReaddir(sftp, abs);
+    for (const item of list) {
+      if (!item || item.filename === "." || item.filename === "..") continue;
+      const childAbs = `${String(abs).replace(/\/+$/, "")}/${item.filename}`;
+      const childRel = rel ? `${rel}/${item.filename}` : item.filename;
+      const isDir = item.attrs?.isDirectory?.() || false;
+      const isFile = item.attrs?.isFile?.() || (!isDir && !item.attrs?.isSymbolicLink?.());
+      if (isDir) {
+        dirs.push(childRel);
+        await walk(childAbs, childRel);
+      } else if (isFile || item.attrs?.isSymbolicLink?.()) {
+        let size = item.attrs?.size || 0;
+        if (item.attrs?.isSymbolicLink?.()) {
+          try {
+            const st = await sftpStat(sftp, childAbs);
+            if (st.isDirectory()) {
+              dirs.push(childRel);
+              await walk(childAbs, childRel);
+              continue;
+            }
+            size = st.size || 0;
+          } catch {
+            continue;
+          }
+        }
+        files.push({ remotePath: childAbs, relPath: childRel, size });
+      }
+    }
+  };
+  await walk(rootDir, "");
+  return { files, dirs };
+}
+
+function joinRemote(base, rel) {
+  const b = String(base || "").replace(/\/+$/, "");
+  const r = String(rel || "").replace(/^\/+/, "");
+  if (!r) return b || "/";
+  if (!b || b === ".") return r;
+  return `${b}/${r}`;
+}
+
 function sftpList(conn, remotePath) {
   return new Promise((resolve, reject) => {
     conn.sftp((err, sftp) => {
@@ -574,16 +763,20 @@ function sftpList(conn, remotePath) {
   });
 }
 
-/** 传输参数：大文件走并行分块，多文件有限并发，失败自动重试 */
+/** 传输参数：多文件并发 + 单文件分块并发，按体积自适应 */
 const TRANSFER_OPTS = {
-  chunkSize: 256 * 1024,
+  chunkSize: 512 * 1024,
   /** 单文件内部并发块数（ssh2 fastPut/fastGet） */
   chunkConcurrency: 8,
-  /** 同时传输的文件数 */
-  fileConcurrency: 3,
+  /** 同时传输的文件数（默认） */
+  fileConcurrency: 8,
+  /** 大量小文件时的文件并发 */
+  fileConcurrencyMany: 12,
   retries: 3,
-  /** 超过该大小时降低文件并发，把带宽留给单文件分块 */
+  /** 超过该大小视为大文件：降低文件并发，提高单文件分块 */
   largeFileBytes: 32 * 1024 * 1024,
+  /** 小于该大小视为小文件：可提高文件并发 */
+  smallFileBytes: 2 * 1024 * 1024,
 };
 
 function sleep(ms) {
@@ -619,20 +812,38 @@ async function mapPool(items, limit, worker) {
 }
 
 function pickFileConcurrency(filesMeta) {
-  const hasLarge = filesMeta.some((f) => f.size >= TRANSFER_OPTS.largeFileBytes);
-  if (filesMeta.length <= 1) return 1;
-  if (hasLarge) return Math.min(2, TRANSFER_OPTS.fileConcurrency);
-  return Math.min(TRANSFER_OPTS.fileConcurrency, filesMeta.length);
+  const n = filesMeta.length;
+  if (n <= 1) return 1;
+  const largeCount = filesMeta.filter((f) => (f.size || 0) >= TRANSFER_OPTS.largeFileBytes).length;
+  const allSmall = filesMeta.every((f) => (f.size || 0) < TRANSFER_OPTS.smallFileBytes);
+  // 全是大文件：少并发、留给单文件分块
+  if (largeCount === n) return Math.min(2, n);
+  // 混有大文件：中等并发
+  if (largeCount > 0) return Math.min(4, n);
+  // 大量小文件：提高并发，吃满管道
+  if (allSmall && n >= 16) return Math.min(TRANSFER_OPTS.fileConcurrencyMany, n);
+  return Math.min(TRANSFER_OPTS.fileConcurrency, n);
 }
 
-function sftpFastPut(sftp, localPath, remotePath, onStep) {
+function pickChunkConcurrency(fileConcurrency, fileSize) {
+  if ((fileSize || 0) >= TRANSFER_OPTS.largeFileBytes) return TRANSFER_OPTS.chunkConcurrency;
+  // 文件并发高时，降低单文件分块并发，避免 SSH 通道拥塞
+  if (fileConcurrency >= 10) return 3;
+  if (fileConcurrency >= 6) return 4;
+  if (fileConcurrency >= 4) return 6;
+  return TRANSFER_OPTS.chunkConcurrency;
+}
+
+function sftpFastPut(sftp, localPath, remotePath, onStep, opts = {}) {
+  const concurrency = opts.concurrency || TRANSFER_OPTS.chunkConcurrency;
+  const chunkSize = opts.chunkSize || TRANSFER_OPTS.chunkSize;
   return new Promise((resolve, reject) => {
     sftp.fastPut(
       localPath,
       remotePath,
       {
-        concurrency: TRANSFER_OPTS.chunkConcurrency,
-        chunkSize: TRANSFER_OPTS.chunkSize,
+        concurrency,
+        chunkSize,
         step: (transferred, _chunk, total) => {
           if (typeof onStep === "function") onStep(transferred, total || 0);
         },
@@ -642,14 +853,16 @@ function sftpFastPut(sftp, localPath, remotePath, onStep) {
   });
 }
 
-function sftpFastGet(sftp, remotePath, localPath, onStep) {
+function sftpFastGet(sftp, remotePath, localPath, onStep, opts = {}) {
+  const concurrency = opts.concurrency || TRANSFER_OPTS.chunkConcurrency;
+  const chunkSize = opts.chunkSize || TRANSFER_OPTS.chunkSize;
   return new Promise((resolve, reject) => {
     sftp.fastGet(
       remotePath,
       localPath,
       {
-        concurrency: TRANSFER_OPTS.chunkConcurrency,
-        chunkSize: TRANSFER_OPTS.chunkSize,
+        concurrency,
+        chunkSize,
         step: (transferred, _chunk, total) => {
           if (typeof onStep === "function") onStep(transferred, total || 0);
         },
@@ -693,6 +906,7 @@ async function sftpUploadBatch(conn, files, { onEvent } = {}) {
   const sftp = await getSftp(conn);
   const emit = typeof onEvent === "function" ? onEvent : () => {};
   const prepared = [];
+  const remoteDirs = new Set();
   for (const f of files) {
     const localPath = expandHome(f.localPath);
     const remotePath = f.remotePath;
@@ -701,8 +915,21 @@ async function sftpUploadBatch(conn, files, { onEvent } = {}) {
     }
     const st = fs.statSync(localPath);
     if (st.isDirectory()) {
-      throw new Error(`暂不支持上传目录: ${localPath}`);
+      remoteDirs.add(remotePath.replace(/\/+$/, ""));
+      const walked = walkLocalFiles(localPath);
+      for (const d of walked.dirs) remoteDirs.add(joinRemote(remotePath, d));
+      for (const file of walked.files) {
+        prepared.push({
+          localPath: file.localPath,
+          remotePath: joinRemote(remotePath, file.relPath),
+          name: file.relPath || path.basename(file.localPath),
+          size: file.size,
+        });
+      }
+      continue;
     }
+    const parent = path.posix.dirname(String(remotePath).replace(/\\/g, "/"));
+    if (parent && parent !== "." && parent !== "/") remoteDirs.add(parent);
     prepared.push({
       localPath,
       remotePath,
@@ -710,9 +937,35 @@ async function sftpUploadBatch(conn, files, { onEvent } = {}) {
       size: st.size,
     });
   }
+  // 按深度分层建目录，同层可并发
+  const dirsSorted = [...remoteDirs].sort((a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b));
+  let depth = -1;
+  let batch = [];
+  const flushDirs = async () => {
+    if (!batch.length) return;
+    await mapPool(batch, Math.min(6, batch.length), async (dir) => sftpMkdirp(sftp, dir));
+    batch = [];
+  };
+  for (const dir of dirsSorted) {
+    const d = String(dir).split("/").filter(Boolean).length;
+    if (d !== depth) {
+      await flushDirs();
+      depth = d;
+    }
+    batch.push(dir);
+  }
+  await flushDirs();
+
+  if (!prepared.length) {
+    emit({ type: "start", totalFiles: 0, totalBytes: 0, direction: "upload", concurrency: 0 });
+    return { count: 0, bytes: 0, files: [], elapsedMs: 0, concurrency: 0 };
+  }
+  // 小文件优先，尽快拉高并发吞吐
+  prepared.sort((a, b) => (a.size || 0) - (b.size || 0));
   const totalBytes = prepared.reduce((s, f) => s + f.size, 0);
   const totalFiles = prepared.length;
-  emit({ type: "start", totalFiles, totalBytes, direction: "upload" });
+  const concurrency = pickFileConcurrency(prepared);
+  emit({ type: "start", totalFiles, totalBytes, direction: "upload", concurrency });
 
   let completedFiles = 0;
   let completedBytes = 0;
@@ -735,12 +988,12 @@ async function sftpUploadBatch(conn, files, { onEvent } = {}) {
       totalBytes,
       completedFiles,
       totalFiles,
+      concurrency,
       speedBps: Math.round((transferredBytes * 1000) / elapsed),
     });
   };
 
   try {
-    const concurrency = pickFileConcurrency(prepared);
     const results = await mapPool(prepared, concurrency, async (f, idx) => {
       emit({
         type: "file-start",
@@ -751,19 +1004,25 @@ async function sftpUploadBatch(conn, files, { onEvent } = {}) {
       });
       inflight.set(idx, 0);
       let lastStep = 0;
+      const chunkConc = pickChunkConcurrency(concurrency, f.size);
       await withRetry(async (attempt) => {
         if (attempt > 0) {
           emit({ type: "retry", index: idx, name: f.name, attempt: attempt + 1 });
           inflight.set(idx, 0);
         }
-        await sftpFastPut(sftp, f.localPath, f.remotePath, (transferred, total) => {
-          const size = total || f.size;
-          // 节流：每 ~256KB 或完成时推一次
-          if (transferred - lastStep >= TRANSFER_OPTS.chunkSize || transferred >= size) {
-            lastStep = transferred;
-            flushProgress(idx, f.name, transferred, size);
-          }
-        });
+        await sftpFastPut(
+          sftp,
+          f.localPath,
+          f.remotePath,
+          (transferred, total) => {
+            const size = total || f.size;
+            if (transferred - lastStep >= TRANSFER_OPTS.chunkSize || transferred >= size) {
+              lastStep = transferred;
+              flushProgress(idx, f.name, transferred, size);
+            }
+          },
+          { concurrency: chunkConc }
+        );
       });
       inflight.delete(idx);
       completedFiles += 1;
@@ -779,6 +1038,7 @@ async function sftpUploadBatch(conn, files, { onEvent } = {}) {
         totalFiles,
         transferredBytes: completedBytes,
         totalBytes,
+        concurrency,
         speedBps: Math.round((completedBytes * 1000) / elapsed),
       });
       return item;
@@ -788,6 +1048,7 @@ async function sftpUploadBatch(conn, files, { onEvent } = {}) {
       bytes: totalBytes,
       files: results,
       elapsedMs: Date.now() - startedAt,
+      concurrency,
     };
   } finally {
     try {
@@ -837,23 +1098,48 @@ async function sftpDownloadBatch(conn, files, { onEvent } = {}) {
   for (const f of files) {
     const remotePath = f.remotePath;
     const localPath = expandHome(f.localPath);
+    let st;
+    try {
+      st = await sftpStat(sftp, remotePath);
+    } catch (err) {
+      throw new Error(`远程路径不存在: ${remotePath} (${err instanceof Error ? err.message : String(err)})`);
+    }
+    if (st.isDirectory()) {
+      fs.mkdirSync(localPath, { recursive: true });
+      const walked = await walkRemoteFiles(sftp, remotePath);
+      for (const d of walked.dirs) {
+        fs.mkdirSync(path.join(localPath, d), { recursive: true });
+      }
+      for (const file of walked.files) {
+        prepared.push({
+          remotePath: file.remotePath,
+          localPath: path.join(localPath, file.relPath),
+          name: file.relPath || path.basename(file.remotePath),
+          size: file.size,
+        });
+      }
+      continue;
+    }
     fs.mkdirSync(path.dirname(localPath), { recursive: true });
-    const size = await new Promise((resolve) => {
-      sftp.stat(remotePath, (err, st) => {
-        if (err || !st) return resolve(0);
-        resolve(st.size || 0);
-      });
-    });
     prepared.push({
       remotePath,
       localPath,
       name: path.basename(remotePath),
-      size,
+      size: st.size || 0,
     });
   }
+  if (!prepared.length) {
+    emit({ type: "start", totalFiles: 0, totalBytes: 0, direction: "download", concurrency: 0 });
+    return { count: 0, bytes: 0, files: [], elapsedMs: 0, concurrency: 0 };
+  }
+  for (const f of prepared) {
+    fs.mkdirSync(path.dirname(f.localPath), { recursive: true });
+  }
+  prepared.sort((a, b) => (a.size || 0) - (b.size || 0));
   const totalBytes = prepared.reduce((s, f) => s + f.size, 0);
   const totalFiles = prepared.length;
-  emit({ type: "start", totalFiles, totalBytes, direction: "download" });
+  const concurrency = pickFileConcurrency(prepared);
+  emit({ type: "start", totalFiles, totalBytes, direction: "download", concurrency });
 
   let completedFiles = 0;
   let completedBytes = 0;
@@ -876,12 +1162,12 @@ async function sftpDownloadBatch(conn, files, { onEvent } = {}) {
       totalBytes,
       completedFiles,
       totalFiles,
+      concurrency,
       speedBps: Math.round((transferredBytes * 1000) / elapsed),
     });
   };
 
   try {
-    const concurrency = pickFileConcurrency(prepared);
     const results = await mapPool(prepared, concurrency, async (f, idx) => {
       emit({
         type: "file-start",
@@ -892,18 +1178,25 @@ async function sftpDownloadBatch(conn, files, { onEvent } = {}) {
       });
       inflight.set(idx, 0);
       let lastStep = 0;
+      const chunkConc = pickChunkConcurrency(concurrency, f.size);
       await withRetry(async (attempt) => {
         if (attempt > 0) {
           emit({ type: "retry", index: idx, name: f.name, attempt: attempt + 1 });
           inflight.set(idx, 0);
         }
-        await sftpFastGet(sftp, f.remotePath, f.localPath, (transferred, total) => {
-          const size = total || f.size;
-          if (transferred - lastStep >= TRANSFER_OPTS.chunkSize || transferred >= size) {
-            lastStep = transferred;
-            flushProgress(idx, f.name, transferred, size);
-          }
-        });
+        await sftpFastGet(
+          sftp,
+          f.remotePath,
+          f.localPath,
+          (transferred, total) => {
+            const size = total || f.size;
+            if (transferred - lastStep >= TRANSFER_OPTS.chunkSize || transferred >= size) {
+              lastStep = transferred;
+              flushProgress(idx, f.name, transferred, size);
+            }
+          },
+          { concurrency: chunkConc }
+        );
       });
       inflight.delete(idx);
       let bytes = f.size;
@@ -925,6 +1218,7 @@ async function sftpDownloadBatch(conn, files, { onEvent } = {}) {
         totalFiles,
         transferredBytes: completedBytes,
         totalBytes: totalBytes || completedBytes,
+        concurrency,
         speedBps: Math.round((completedBytes * 1000) / elapsed),
       });
       return item;
@@ -934,10 +1228,134 @@ async function sftpDownloadBatch(conn, files, { onEvent } = {}) {
       bytes: results.reduce((s, r) => s + (r.bytes || 0), 0),
       files: results,
       elapsedMs: Date.now() - startedAt,
+      concurrency,
     };
   } finally {
     try {
       sftp.end();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** 主机 A → 主机 B：展开目录后经本机临时目录并发中转 */
+async function sftpRelayBatch(fromHost, toHost, items, { onEvent } = {}) {
+  const emit = typeof onEvent === "function" ? onEvent : () => {};
+  const tmpRoot = path.join(
+    os.tmpdir(),
+    `ssh-mcp-relay-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
+  fs.mkdirSync(tmpRoot, { recursive: true });
+  try {
+    const downloadPayload = items.map((it, i) => ({
+      remotePath: it.fromPath,
+      localPath: path.join(tmpRoot, `item-${i}-${path.basename(it.fromPath) || "bin"}`),
+      toPath: it.toPath,
+    }));
+    // 先整包下载（支持目录展开）
+    const dlMap = downloadPayload.map((d) => ({
+      remotePath: d.remotePath,
+      localPath: d.localPath,
+    }));
+    let localFiles = [];
+    await withConnection(fromHost, true, async (conn) => {
+      // 复用 download batch 展开，但要记住每个根到 toPath 的映射
+      const sftp = await getSftp(conn);
+      try {
+        for (let i = 0; i < downloadPayload.length; i++) {
+          const d = downloadPayload[i];
+          const st = await sftpStat(sftp, d.remotePath);
+          if (st.isDirectory()) {
+            fs.mkdirSync(d.localPath, { recursive: true });
+            const walked = await walkRemoteFiles(sftp, d.remotePath);
+            for (const dir of walked.dirs) {
+              fs.mkdirSync(path.join(d.localPath, dir), { recursive: true });
+            }
+            for (const file of walked.files) {
+              localFiles.push({
+                localPath: path.join(d.localPath, file.relPath),
+                remotePath: joinRemote(d.toPath, file.relPath),
+                name: file.relPath || path.basename(file.remotePath),
+                size: file.size,
+                _remoteSrc: file.remotePath,
+              });
+            }
+          } else {
+            localFiles.push({
+              localPath: d.localPath,
+              remotePath: d.toPath,
+              name: path.basename(d.remotePath),
+              size: st.size || 0,
+              _remoteSrc: d.remotePath,
+            });
+          }
+        }
+      } finally {
+        try {
+          sftp.end();
+        } catch {
+          /* ignore */
+        }
+      }
+      // 并发拉取
+      if (localFiles.length) {
+        const prepared = localFiles.map((f) => ({
+          remotePath: f._remoteSrc,
+          localPath: f.localPath,
+          name: f.name,
+          size: f.size,
+        }));
+        for (const f of prepared) fs.mkdirSync(path.dirname(f.localPath), { recursive: true });
+        const sftp2 = await getSftp(conn);
+        const conc = pickFileConcurrency(prepared);
+        try {
+          await mapPool(prepared, conc, async (f) => {
+            const chunkConc = pickChunkConcurrency(conc, f.size);
+            await withRetry(() =>
+              sftpFastGet(sftp2, f.remotePath, f.localPath, null, { concurrency: chunkConc })
+            );
+            try {
+              f.size = fs.statSync(f.localPath).size;
+            } catch {
+              /* ignore */
+            }
+          });
+        } finally {
+          try {
+            sftp2.end();
+          } catch {
+            /* ignore */
+          }
+        }
+        // sync sizes back
+        localFiles = localFiles.map((f, idx) => ({
+          ...f,
+          size: prepared[idx].size || f.size,
+        }));
+      }
+    });
+
+    if (!localFiles.length) {
+      emit({ type: "start", totalFiles: 0, totalBytes: 0, direction: "relay", concurrency: 0 });
+      return { count: 0, bytes: 0, files: [], elapsedMs: 0, concurrency: 0 };
+    }
+
+    const uploadFiles = localFiles.map((f) => ({
+      localPath: f.localPath,
+      remotePath: f.remotePath,
+    }));
+    const result = await withConnection(toHost, true, (conn) =>
+      sftpUploadBatch(conn, uploadFiles, { onEvent })
+    );
+    return {
+      ...result,
+      fromId: fromHost.id,
+      toId: toHost.id,
+    };
+  } finally {
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
     } catch {
       /* ignore */
     }
@@ -970,17 +1388,62 @@ function sftpRename(conn, from, to) {
   });
 }
 
-function sftpDelete(conn, remotePath, isDir) {
+function sftpUnlink(sftp, remotePath) {
   return new Promise((resolve, reject) => {
-    conn.sftp((err, sftp) => {
+    sftp.unlink(remotePath, (err) => (err ? reject(err) : resolve()));
+  });
+}
+
+function sftpRmdir(sftp, remotePath) {
+  return new Promise((resolve, reject) => {
+    sftp.rmdir(remotePath, (err) => (err ? reject(err) : resolve()));
+  });
+}
+
+async function sftpDeleteRecursive(sftp, remotePath) {
+  let st;
+  try {
+    st = await sftpStat(sftp, remotePath);
+  } catch (err) {
+    throw new Error(
+      `无法删除「${remotePath}」：路径不存在或无权限（${err instanceof Error ? err.message : String(err)}）`
+    );
+  }
+  if (st.isDirectory()) {
+    const list = await sftpReaddir(sftp, remotePath);
+    for (const item of list) {
+      if (!item || item.filename === "." || item.filename === "..") continue;
+      const child = `${String(remotePath).replace(/\/+$/, "")}/${item.filename}`;
+      await sftpDeleteRecursive(sftp, child);
+    }
+    await sftpRmdir(sftp, remotePath);
+    return { path: remotePath, type: "dir" };
+  }
+  await sftpUnlink(sftp, remotePath);
+  return { path: remotePath, type: "file" };
+}
+
+function sftpDelete(conn, remotePath, _isDirHint) {
+  return new Promise((resolve, reject) => {
+    conn.sftp(async (err, sftp) => {
       if (err) return reject(err);
-      const done = (e) => {
-        sftp.end();
-        if (e) reject(e);
-        else resolve(true);
-      };
-      if (isDir) sftp.rmdir(remotePath, done);
-      else sftp.unlink(remotePath, done);
+      try {
+        // 不信任客户端 isDir：先 stat，目录递归删，文件 unlink
+        const result = await sftpDeleteRecursive(sftp, remotePath);
+        try {
+          sftp.end();
+        } catch {
+          /* ignore */
+        }
+        resolve(result);
+      } catch (e) {
+        try {
+          sftp.end();
+        } catch {
+          /* ignore */
+        }
+        reject(e);
+      }
     });
   });
 }
@@ -1011,16 +1474,60 @@ function attachShellWs(server) {
       const host = getHost(id);
       const { Client } = await import("ssh2");
       const { resolveAuth } = await import("./hosts.js");
+      const auth = resolveAuth(host, getHostSecret(host.id));
       const conn = new Client();
+      let finished = false;
+      const sendErr = (message) => {
+        if (finished) return;
+        finished = true;
+        try {
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ type: "error", message: String(message || "连接失败") }));
+          }
+        } catch {
+          /* ignore */
+        }
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        try {
+          conn.end();
+        } catch {
+          /* ignore */
+        }
+      };
+      const connectTimer = setTimeout(() => {
+        sendErr(
+          `SSH connect timeout to ${host.host}:${host.port || 22} (${Math.round((auth.readyTimeout || 20000) / 1000)}s)`
+        );
+      }, auth.readyTimeout || 20000);
       conn
         .on("ready", () => {
+          clearTimeout(connectTimer);
           conn.shell({ term: "xterm-256color" }, (err, stream) => {
             if (err) {
-              ws.send(JSON.stringify({ type: "error", message: err.message }));
-              ws.close();
+              sendErr(err.message || "无法打开远程 Shell");
+              return;
+            }
+            if (finished) {
+              try {
+                stream.end();
+              } catch {
+                /* ignore */
+              }
               conn.end();
               return;
             }
+            finished = true;
+            markShellOnline(id);
+            let shellCounted = true;
+            const dropShell = () => {
+              if (!shellCounted) return;
+              shellCounted = false;
+              markShellOffline(id);
+            };
             ws.send(JSON.stringify({ type: "ready", host: id }));
             stream.on("data", (data) => {
               if (ws.readyState === ws.OPEN) {
@@ -1033,6 +1540,7 @@ function attachShellWs(server) {
               }
             });
             stream.on("close", () => {
+              dropShell();
               try {
                 ws.close();
               } catch {
@@ -1052,6 +1560,7 @@ function attachShellWs(server) {
               }
             });
             ws.on("close", () => {
+              dropShell();
               try {
                 stream.end();
               } catch {
@@ -1062,14 +1571,10 @@ function attachShellWs(server) {
           });
         })
         .on("error", (err) => {
-          try {
-            ws.send(JSON.stringify({ type: "error", message: err.message }));
-          } catch {
-            /* ignore */
-          }
-          ws.close();
+          clearTimeout(connectTimer);
+          sendErr(err?.message || "SSH 连接失败");
         })
-        .connect(resolveAuth(host, getHostSecret(host.id)));
+        .connect(auth);
     } catch (err) {
       try {
         ws.send(

@@ -11,6 +11,7 @@ function resolvePanel() {
 const PANEL = resolvePanel();
 const BUS_NAME = "cursor-ssh-mcp-bus";
 const STORE_KEY = "cursor-ssh-mcp-active";
+const STATUS_KEY = "cursor-ssh-mcp-session-status";
 const bus = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(BUS_NAME) : null;
 
 const TERM_PREFS_KEY = "cursor-ssh-mcp-term-prefs";
@@ -67,6 +68,10 @@ const state = {
     sftp: true,
     term: true,
     termHeight: null,
+    /** @type {null|'sftp'|'term'} */
+    maximized: null,
+    /** @type {'sftp-top'|'term-top'} */
+    stack: localStorage.getItem("cursor-ssh-mcp-stack") === "term-top" ? "term-top" : "sftp-top",
   },
   themeId: localStorage.getItem("cursor-ssh-mcp-theme") || "forest",
   history: [],
@@ -653,6 +658,60 @@ function readStoredSelection() {
   }
 }
 
+function persistSessionStatuses() {
+  const map = {};
+  Object.keys(state.sessions).forEach((id) => {
+    const sess = state.sessions[id];
+    map[id] = { status: sess.status || "idle", error: sess.error || "" };
+  });
+  try {
+    localStorage.setItem(STATUS_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
+}
+
+function applySessionStatus(id, status, error, opts = {}) {
+  const { fromBus = false } = opts;
+  if (!id || !status) return;
+  const sess = ensureSession(id);
+  // 本页已有活着的终端连接时，不以对侧/缓存覆盖为 idle
+  const live =
+    sess.ws &&
+    (sess.ws.readyState === WebSocket.OPEN || sess.ws.readyState === WebSocket.CONNECTING);
+  if (fromBus && live && status === "idle") return;
+  if (sess.status === status && (sess.error || "") === (error || "") && fromBus) {
+    renderHosts();
+    return;
+  }
+  sess.status = status;
+  sess.error = error || "";
+  if (state.activeId === id && state.panel !== "hosts") updateTermStatus(sess);
+  renderHosts();
+  if (!fromBus) {
+    persistSessionStatuses();
+    publish({ type: "sessionStatus", id, status: sess.status, error: sess.error });
+  }
+}
+
+function loadPersistedSessionStatuses() {
+  try {
+    const map = JSON.parse(localStorage.getItem(STATUS_KEY) || "{}");
+    Object.entries(map).forEach(([id, v]) => {
+      if (!v || !v.status) return;
+      const sess = ensureSession(id);
+      const live =
+        sess.ws &&
+        (sess.ws.readyState === WebSocket.OPEN || sess.ws.readyState === WebSocket.CONNECTING);
+      if (live) return;
+      sess.status = v.status;
+      sess.error = v.error || "";
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
  * @typedef {object} Session
  * @property {'idle'|'connecting'|'online'|'error'} status
@@ -746,6 +805,49 @@ function statusLabel(status) {
   }
 }
 
+function statusActionMeta(status) {
+  switch (status) {
+    case "online":
+      return { label: "已连接", action: "断开", title: "点击断开连接" };
+    case "connecting":
+      return { label: "连接中", action: "取消", title: "点击取消连接" };
+    case "error":
+      return { label: "失败", action: "重试", title: "点击重新连接" };
+    default:
+      return { label: "未连接", action: "连接", title: "点击连接（文件 + 终端）" };
+  }
+}
+
+function statusButtonHtml(status) {
+  const meta = statusActionMeta(status);
+  return `<button type="button" class="status-pill status-btn ${status}" data-act="toggle-session" title="${escapeHtml(meta.title)}">
+            <span class="status-label">${meta.label}</span>
+            <span class="status-action" aria-hidden="true">${meta.action}</span>
+          </button>`;
+}
+
+function isTerminalLive(sess) {
+  return Boolean(
+    sess?.ws &&
+      (sess.ws.readyState === WebSocket.OPEN || sess.ws.readyState === WebSocket.CONNECTING)
+  );
+}
+
+function sessionLooksActive(id) {
+  const sess = ensureSession(id);
+  if (isTerminalLive(sess)) return true;
+  return sess.status === "online" || sess.status === "connecting";
+}
+
+async function toggleHostSession(id) {
+  const sess = ensureSession(id);
+  if (sess.status === "online" || sess.status === "connecting" || isTerminalLive(sess)) {
+    disconnectHost(id);
+    return;
+  }
+  await selectHost(id, "both");
+}
+
 function updateEmptyState() {
   const empty = $("host-empty");
   const list = $("host-list");
@@ -754,7 +856,12 @@ function updateEmptyState() {
   list.classList.toggle("hidden", !hasHosts);
 }
 
+function saveStackPref() {
+  localStorage.setItem("cursor-ssh-mcp-stack", state.layout.stack);
+}
+
 function updateLayoutChrome() {
+  const split = $("main-split");
   const sftpPane = $("sftp-pane");
   const termPane = $("term-pane");
   const resize = $("panel-resize");
@@ -762,35 +869,84 @@ function updateLayoutChrome() {
   const showSftp = $("btn-show-sftp");
   const closeSftp = $("btn-close-sftp");
   const closeTerm = $("btn-close-term");
-  const bothOpen = state.layout.sftp && state.layout.term;
+  const maxSftp = $("btn-max-sftp");
+  const maxTerm = $("btn-max-term");
+  const swapBtn = $("btn-swap-panes");
 
-  sftpPane.classList.toggle("hidden", !state.layout.sftp);
-  termPane.classList.toggle("hidden", !state.layout.term);
+  // 全屏态：只显示被放大的面板
+  const maximized = state.layout.maximized;
+  const showSftpPane = maximized ? maximized === "sftp" : state.layout.sftp;
+  const showTermPane = maximized ? maximized === "term" : state.layout.term;
+  const bothOpen = !maximized && state.layout.sftp && state.layout.term;
+
+  sftpPane.classList.toggle("hidden", !showSftpPane);
+  termPane.classList.toggle("hidden", !showTermPane);
   resize.classList.toggle("hidden", !bothOpen);
-  showTerm.classList.toggle("hidden", state.layout.term);
-  showSftp.classList.toggle("hidden", state.layout.sftp);
-  // 只剩一个窗口时隐藏关闭按钮（关了也没用）
+  showTerm.classList.toggle("hidden", showTermPane || Boolean(maximized));
+  showSftp.classList.toggle("hidden", showSftpPane || Boolean(maximized));
+  // 双开时才显示关闭；全屏时关闭隐藏，用「还原」
   closeSftp?.classList.toggle("hidden", !bothOpen);
   closeTerm?.classList.toggle("hidden", !bothOpen);
 
-  if (state.layout.sftp && state.layout.term) {
+  if (maxSftp) {
+    const showMax = (bothOpen || maximized === "sftp") && showSftpPane;
+    maxSftp.classList.toggle("hidden", !showMax);
+    maxSftp.textContent = maximized === "sftp" ? "还原" : "全屏";
+    maxSftp.title = maximized === "sftp" ? "还原为文件+终端" : "文件面板铺满（隐藏终端）";
+  }
+  if (maxTerm) {
+    const showMax = (bothOpen || maximized === "term") && showTermPane;
+    maxTerm.classList.toggle("hidden", !showMax);
+    maxTerm.textContent = maximized === "term" ? "还原" : "全屏";
+    maxTerm.title = maximized === "term" ? "还原为文件+终端" : "终端面板铺满（隐藏文件）";
+  }
+  if (swapBtn) {
+    swapBtn.classList.toggle("hidden", !bothOpen);
+    swapBtn.textContent = state.layout.stack === "sftp-top" ? "终端置顶" : "文件置顶";
+  }
+
+  split?.classList.toggle("stack-sftp-top", state.layout.stack !== "term-top");
+  split?.classList.toggle("stack-term-top", state.layout.stack === "term-top");
+
+  if (bothOpen) {
     termPane.style.flex = "none";
     termPane.style.height = state.layout.termHeight
       ? `${state.layout.termHeight}px`
       : "36%";
     sftpPane.style.flex = "1";
-  } else if (state.layout.term) {
+    sftpPane.style.height = "auto";
+  } else if (showTermPane && !showSftpPane) {
     termPane.style.flex = "1";
     termPane.style.height = "auto";
     sftpPane.style.flex = "0";
-  } else if (state.layout.sftp) {
+  } else if (showSftpPane && !showTermPane) {
     sftpPane.style.flex = "1";
+    sftpPane.style.height = "auto";
     termPane.style.flex = "0";
   }
 
   const sess = state.activeId ? ensureSession(state.activeId) : null;
   fitActiveTerminal();
   if (sess) updateTermStatus(sess);
+}
+
+function maximizePane(which) {
+  if (state.layout.maximized === which) {
+    state.layout.maximized = null;
+    state.layout.sftp = true;
+    state.layout.term = true;
+  } else {
+    state.layout.maximized = which;
+    state.layout.sftp = true;
+    state.layout.term = true;
+  }
+  updateLayoutChrome();
+}
+
+function swapPaneStack() {
+  state.layout.stack = state.layout.stack === "term-top" ? "sftp-top" : "term-top";
+  saveStackPref();
+  updateLayoutChrome();
 }
 
 function updateActiveLabels() {
@@ -809,8 +965,19 @@ function updateActiveLabels() {
 
 function updateTermStatus(sess) {
   const el = $("term-status");
-  el.textContent = statusLabel(sess.status);
-  el.className = `status-pill ${sess.status}`;
+  if (!el) return;
+  const status = sess?.status || "idle";
+  const meta = statusActionMeta(status);
+  el.className = `status-pill status-btn ${status}`;
+  el.title = meta.title;
+  const label = el.querySelector(".status-label");
+  const action = el.querySelector(".status-action");
+  if (label && action) {
+    label.textContent = meta.label;
+    action.textContent = meta.action;
+  } else {
+    el.textContent = meta.label;
+  }
 }
 
 function renderHosts() {
@@ -827,7 +994,7 @@ function renderHosts() {
         <div class="host-copy">
           <div class="host-name-row">
             <div class="host-name">${escapeHtml(h.name || h.id)}</div>
-            <span class="status-pill ${sess.status}">${statusLabel(sess.status)}</span>
+            ${statusButtonHtml(sess.status)}
           </div>
           <div class="host-meta">${escapeHtml(h.username)}@${escapeHtml(h.host)}:${h.port || 22}</div>
         </div>
@@ -835,18 +1002,13 @@ function renderHosts() {
       <div class="host-actions">
         <button type="button" class="btn btn-secondary btn-compact" data-act="sftp">文件</button>
         <button type="button" class="btn btn-primary btn-compact" data-act="term">终端</button>
-        <button type="button" class="btn btn-ghost btn-compact" data-act="both">默认</button>
         <button type="button" class="btn btn-ghost btn-compact" data-act="edit">编辑</button>
         <button type="button" class="btn btn-danger btn-compact" data-act="delete">删除</button>
-        ${
-          sess.status === "online" || sess.status === "connecting"
-            ? `<button type="button" class="btn btn-ghost btn-compact" data-act="disconnect">断开</button>`
-            : ""
-        }
       </div>
     `;
     li.addEventListener("click", (e) => {
       if (e.target.closest("button")) return;
+      // 点主机卡片：默认上文件下终端（已连接则只切布局，不重连）
       selectHost(h.id, "both");
     });
     li.addEventListener("contextmenu", (e) => {
@@ -857,8 +1019,8 @@ function renderHosts() {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         const act = btn.getAttribute("data-act");
-        if (act === "disconnect") {
-          disconnectHost(h.id);
+        if (act === "toggle-session") {
+          toggleHostSession(h.id);
           return;
         }
         if (act === "edit") {
@@ -913,6 +1075,17 @@ async function refreshHosts() {
     $("local-path").value = state.localPath;
   }
   state.hosts.forEach((h) => ensureSession(h.id));
+  // 服务端 keepalive 会话 + 跨页缓存状态，补齐主机列表徽标
+  const serverOnline = new Set(data.sessions || []);
+  loadPersistedSessionStatuses();
+  state.hosts.forEach((h) => {
+    const sess = ensureSession(h.id);
+    const live =
+      sess.ws &&
+      (sess.ws.readyState === WebSocket.OPEN || sess.ws.readyState === WebSocket.CONNECTING);
+    if (live) return;
+    if (serverOnline.has(h.id) && sess.status === "idle") sess.status = "online";
+  });
   if (
     state.endpoints.right.kind === "host" &&
     state.endpoints.right.hostId &&
@@ -993,62 +1166,19 @@ function fitActiveTerminal() {
   }
 }
 
-function connectTerminal(id) {
-  if (!ensureTerminalFor(id)) {
-    alert("终端组件加载失败，请刷新页面");
-    return;
+const SHELL_CONNECT_TIMEOUT_MS = 45000;
+
+function clearConnectTimer(sess) {
+  if (sess?.connectTimer) {
+    clearTimeout(sess.connectTimer);
+    sess.connectTimer = null;
   }
+}
+
+function bindTerminalIO(id) {
   const sess = ensureSession(id);
-  if (sess.ws && (sess.ws.readyState === WebSocket.OPEN || sess.ws.readyState === WebSocket.CONNECTING)) {
-    updateTermStatus(sess);
-    renderHosts();
-    return;
-  }
-
-  sess.status = "connecting";
-  sess.error = "";
-  updateTermStatus(sess);
-  renderHosts();
-
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws/shell?id=${encodeURIComponent(id)}`);
-  sess.ws = ws;
-
-  ws.onopen = () => {
-    /* ready comes from server after shell starts */
-  };
-  ws.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
-    if (msg.type === "data") sess.term.write(msg.data);
-    if (msg.type === "error") {
-      sess.status = "error";
-      sess.error = msg.message;
-      sess.term.writeln(`\r\n\x1b[31m${msg.message}\x1b[0m`);
-      updateTermStatus(sess);
-      renderHosts();
-    }
-    if (msg.type === "ready") {
-      sess.status = "online";
-      updateTermStatus(sess);
-      renderHosts();
-      fitActiveTerminal();
-    }
-  };
-  ws.onclose = () => {
-    if (sess.ws === ws) {
-      sess.ws = null;
-      if (sess.status !== "error") sess.status = "idle";
-      updateTermStatus(sess);
-      renderHosts();
-    }
-  };
-  ws.onerror = () => {
-    sess.status = "error";
-    sess.error = "连接失败";
-    updateTermStatus(sess);
-    renderHosts();
-  };
-
+  if (!sess.term || sess.ioBound) return;
+  sess.ioBound = true;
   sess.term.onData((data) => {
     if (data === "\r") {
       pushHistory(state.inputBuffer);
@@ -1069,8 +1199,109 @@ function connectTerminal(id) {
   });
 }
 
-function disconnectHost(id) {
+function connectTerminal(id, opts = {}) {
+  const { force = false } = opts;
+  if (!ensureTerminalFor(id)) {
+    showAlert({ title: "终端不可用", message: "终端组件加载失败，请刷新页面后重试。" });
+    return;
+  }
   const sess = ensureSession(id);
+  bindTerminalIO(id);
+
+  // 已有活动连接：复用，不重连
+  if (!force && isTerminalLive(sess)) {
+    if (sess.status !== "online" && sess.ws.readyState === WebSocket.OPEN) {
+      applySessionStatus(id, "online", "");
+    } else if (state.activeId === id) {
+      updateTermStatus(sess);
+    }
+    fitActiveTerminal();
+    return;
+  }
+
+  if (force && sess.ws) {
+    try {
+      sess.ws.close();
+    } catch {
+      /* ignore */
+    }
+    sess.ws = null;
+  }
+
+  applySessionStatus(id, "connecting", "");
+  clearConnectTimer(sess);
+
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws/shell?id=${encodeURIComponent(id)}`);
+  sess.ws = ws;
+  let settled = false;
+
+  const fail = (raw) => {
+    if (settled) return;
+    settled = true;
+    clearConnectTimer(sess);
+    try {
+      if (sess.term) sess.term.writeln(`\r\n\x1b[31m${String(raw || "连接失败")}\x1b[0m`);
+    } catch {
+      /* ignore */
+    }
+    notifyConnectFailure(id, raw || "连接失败");
+    try {
+      if (sess.ws === ws) ws.close();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  sess.connectTimer = setTimeout(() => {
+    if (sess.ws === ws && (sess.status === "connecting" || sess.status === "idle")) {
+      fail(`SSH connect timeout (${Math.round(SHELL_CONNECT_TIMEOUT_MS / 1000)}s)`);
+    }
+  }, SHELL_CONNECT_TIMEOUT_MS);
+
+  ws.onopen = () => {
+    /* ready comes from server after shell starts */
+  };
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "data") sess.term.write(msg.data);
+    if (msg.type === "error") {
+      fail(msg.message || "连接失败");
+    }
+    if (msg.type === "ready") {
+      if (settled) return;
+      settled = true;
+      clearConnectTimer(sess);
+      applySessionStatus(id, "online", "");
+      fitActiveTerminal();
+    }
+  };
+  ws.onclose = () => {
+    if (sess.ws !== ws) return;
+    sess.ws = null;
+    clearConnectTimer(sess);
+    if (sess.status === "error") {
+      persistSessionStatuses();
+      publish({ type: "sessionStatus", id, status: "error", error: sess.error || "" });
+      if (state.activeId === id) updateTermStatus(sess);
+      renderHosts();
+      return;
+    }
+    if (!settled && sess.status === "connecting") {
+      fail("连接已关闭（可能超时、认证失败或主机不可达）");
+      return;
+    }
+    applySessionStatus(id, "idle", "");
+  };
+  ws.onerror = () => {
+    if (!settled) fail("连接失败");
+  };
+}
+
+function disconnectHost(id, opts = {}) {
+  const { fromBus = false } = opts;
+  const sess = ensureSession(id);
+  clearConnectTimer(sess);
   if (sess.ws) {
     try {
       sess.ws.close();
@@ -1079,10 +1310,8 @@ function disconnectHost(id) {
     }
     sess.ws = null;
   }
-  sess.status = "idle";
-  sess.error = "";
-  if (state.activeId === id) updateTermStatus(sess);
-  renderHosts();
+  applySessionStatus(id, "idle", "", { fromBus });
+  if (!fromBus) publish({ type: "disconnectHost", id });
 }
 
 function paneDom(side) {
@@ -1343,7 +1572,7 @@ function renderFileList(side) {
     if (selectedPaths.has(e.path)) tr.classList.add("selected");
     tr.setAttribute("data-path", e.path);
     tr.setAttribute("data-idx", String(idx));
-    tr.draggable = !e.isParent && e.type === "file";
+    tr.draggable = !e.isParent && (e.type === "file" || e.type === "dir");
     const icon = e.isParent ? "↩" : isDir ? "📁" : "📄";
     tr.innerHTML = `
       <td class="col-name">
@@ -1364,21 +1593,17 @@ function renderFileList(side) {
       const cur = selectedEntries(side);
       const list = entries;
       if (ev.metaKey || ev.ctrlKey) {
-        if (e.type !== "file") {
-          state.paneSelected[side] = [e];
-        } else {
-          const exists = cur.find((x) => x.path === e.path);
-          state.paneSelected[side] = exists
-            ? cur.filter((x) => x.path !== e.path)
-            : [...cur.filter((x) => x.type === "file"), e];
-        }
+        const exists = cur.find((x) => x.path === e.path);
+        state.paneSelected[side] = exists
+          ? cur.filter((x) => x.path !== e.path)
+          : [...transferrableEntries(cur), e];
       } else if (ev.shiftKey && cur.length) {
         const lastPath = cur[cur.length - 1]?.path;
         const a = list.findIndex((n) => n.path === lastPath);
         const b = list.findIndex((n) => n.path === e.path);
         if (a >= 0 && b >= 0) {
           const [lo, hi] = a < b ? [a, b] : [b, a];
-          state.paneSelected[side] = list.slice(lo, hi + 1).filter((x) => x.type === "file");
+          state.paneSelected[side] = transferrableEntries(list.slice(lo, hi + 1));
         } else state.paneSelected[side] = [e];
       } else {
         state.paneSelected[side] = [e];
@@ -1420,11 +1645,11 @@ function renderFileList(side) {
     });
 
     tr.addEventListener("dragstart", (ev) => {
-      if (e.isParent || e.type !== "file") {
+      if (e.isParent || (e.type !== "file" && e.type !== "dir")) {
         ev.preventDefault();
         return;
       }
-      let files = selectedEntries(side).filter((x) => x.type === "file");
+      let files = transferrableEntries(selectedEntries(side));
       if (!files.find((x) => x.path === e.path)) {
         files = [e];
         state.paneSelected[side] = [e];
@@ -1481,18 +1706,29 @@ async function refreshPane(side) {
     );
     sess.remotePath = data.path;
     sess.sftpReady = true;
-    if (sess.status === "idle") sess.status = "online";
+    // 终端已在线时保持 online；否则文件连上即标为已连接
+    if (sess.status !== "online") {
+      applySessionStatus(ep.hostId, "online", "");
+    } else {
+      renderHosts();
+    }
     dom.path.value = data.path;
     state.paneEntries[side] = data.entries || [];
     renderCrumb(side, data.path);
     renderFileList(side);
-    renderHosts();
   } catch (err) {
     sess.sftpReady = false;
-    if (sess.status !== "online") sess.status = "error";
-    sess.error = err.message;
-    dom.list.innerHTML = `<tr><td colspan="4" class="empty-row">${escapeHtml(err.message)}</td></tr>`;
-    renderHosts();
+    const msg = err instanceof Error ? err.message : String(err);
+    dom.list.innerHTML = `<tr><td colspan="4" class="empty-row">${escapeHtml(msg)}</td></tr>`;
+    // 终端仍在线时不把整机打成 error，只提示文件通道失败
+    if (sess.status === "online" && sess.ws) {
+      showAlert({
+        title: "文件连接失败",
+        message: formatConnectError(msg, state.hosts.find((h) => h.id === ep.hostId)),
+      });
+      return;
+    }
+    notifyConnectFailure(ep.hostId, msg);
   }
 }
 
@@ -1538,11 +1774,12 @@ function transferProgressLabel(ev) {
   const total = ev.totalFiles || 0;
   const name = ev.name || "";
   const speed = ev.speedBps != null ? ` · ${formatSpeed(ev.speedBps)}` : "";
+  const conc = ev.concurrency ? ` · ${ev.concurrency}路` : "";
   if (ev.type === "retry") return `重试 ${name}（第 ${ev.attempt} 次）`;
   if (ev.totalBytes > 0 && ev.transferredBytes != null) {
-    return `(${done}/${total}) ${name}  ${formatSize(ev.transferredBytes)}/${formatSize(ev.totalBytes)}${speed}`;
+    return `(${done}/${total}) ${name}  ${formatSize(ev.transferredBytes)}/${formatSize(ev.totalBytes)}${speed}${conc}`;
   }
-  return `(${done}/${total}) ${name}${speed}`;
+  return `(${done}/${total}) ${name}${speed}${conc}`;
 }
 
 function transferRatio(ev) {
@@ -1622,48 +1859,93 @@ async function apiNdjson(pathName, body, onEvent) {
   return final || { count: 0 };
 }
 
+function transferrableEntries(entries) {
+  return (entries || []).filter((x) => x && !x.isParent && (x.type === "file" || x.type === "dir"));
+}
+
 async function transferFiles(fromSide, toSide, files) {
   const fromEp = state.endpoints[fromSide];
   const toEp = state.endpoints[toSide];
-  const list = (files || selectedEntries(fromSide)).filter((x) => x && x.type === "file");
+  let list = transferrableEntries(files || selectedEntries(fromSide));
   if (!list.length) {
-    alert(`请先在${fromSide === "left" ? "左侧" : "右侧"}选中文件（支持 Ctrl/⌘ 多选，或拖拽）`);
+    showAlert({
+      title: "未选择内容",
+      message: `请先在${fromSide === "left" ? "左侧" : "右侧"}选中文件或文件夹（支持多选 / 拖拽）`,
+    });
     return;
   }
   if (sameEndpoint(fromEp, toEp)) {
-    alert("左右来源相同，无法传输");
+    showAlert({ title: "无法传输", message: "左右来源相同，无法传输" });
     return;
   }
   if (fromEp.kind === "local" && toEp.kind === "local") {
-    alert("暂不支持本地到本地传输");
+    showAlert({ title: "无法传输", message: "暂不支持本地到本地传输" });
     return;
   }
   if (toEp.kind === "host" && !toEp.hostId) {
-    alert("请先选择目标主机");
+    showAlert({ title: "无法传输", message: "请先选择目标主机" });
     return;
   }
   if (fromEp.kind === "host" && !fromEp.hostId) {
-    alert("请先选择源主机");
+    showAlert({ title: "无法传输", message: "请先选择源主机" });
     return;
   }
   if (state.transferBusy) return;
+
+  // 同名冲突：替换 / 另存序号 / 取消
+  try {
+    await refreshPane(toSide);
+  } catch {
+    /* 列表刷新失败不阻断，继续用缓存判断 */
+  }
+  const resolved = await resolveTransferConflicts(toSide, list);
+  if (resolved.action === "cancel") return;
+  list = resolved.items;
+
+  if (state.transferBusy) return;
   state.transferBusy = true;
-  setTransferProgress(true, `准备传输 ${list.length} 个文件…`, 0);
+  const dirCount = list.filter((x) => x.type === "dir").length;
+  const fileCount = list.length - dirCount;
+  const prepLabel =
+    dirCount > 0
+      ? `准备传输 ${fileCount} 个文件 + ${dirCount} 个文件夹（将递归展开，多文件并发）…`
+      : `准备传输 ${fileCount} 个文件（多文件并发）…`;
+  setTransferProgress(true, prepLabel, 0);
   const started = Date.now();
+  let lastConc = 0;
   const onProgress = (ev) => {
-    if (!ev || ev.type === "done" || ev.type === "start") {
-      if (ev?.type === "start") {
-        setTransferProgress(
-          true,
-          `开始传输 ${ev.totalFiles} 个文件${ev.totalBytes ? `（${formatSize(ev.totalBytes)}）` : ""}…`,
-          0
-        );
-      }
+    if (!ev || ev.type === "done") return;
+    if (ev.type === "start") {
+      lastConc = ev.concurrency || lastConc;
+      const concHint = ev.concurrency ? ` · ${ev.concurrency} 路并发` : "";
+      setTransferProgress(
+        true,
+        `开始传输 ${ev.totalFiles} 个文件${ev.totalBytes ? `（${formatSize(ev.totalBytes)}）` : ""}${concHint}…`,
+        0
+      );
       return;
     }
+    if (ev.concurrency) lastConc = ev.concurrency;
     setTransferProgress(true, transferProgressLabel(ev), transferRatio(ev));
   };
   try {
+    if (resolved.action === "replace" && resolved.conflicts?.length) {
+      setTransferProgress(true, `正在清理 ${resolved.conflicts.length} 个同名项…`, 0);
+      for (const c of resolved.conflicts) {
+        const target = c.existing || {
+          path: joinPath(panePath(toSide), c.name),
+          type: c.type || "file",
+          name: c.name,
+        };
+        try {
+          await deleteRemoteOrLocal(toEp, target, target.type === "dir");
+        } catch (err) {
+          // 文件可被覆盖时删除失败不阻断；目录必须删掉
+          if (target.type === "dir") throw err;
+        }
+      }
+    }
+
     if (fromEp.kind === "local" && toEp.kind === "host") {
       const payload = list.map((f) => ({
         localPath: f.path,
@@ -1685,33 +1967,28 @@ async function transferFiles(fromSide, toSide, files) {
         onProgress
       );
     } else if (fromEp.kind === "host" && toEp.kind === "host") {
-      for (let i = 0; i < list.length; i++) {
-        const selected = list[i];
-        const toPath = joinPath(panePath(toSide), selected.name);
-        setTransferProgress(true, `(${i + 1}/${list.length}) ${selected.name}`, i / list.length);
-        await api("/api/transfer/relay", {
-          method: "POST",
-          body: JSON.stringify({
-            fromId: fromEp.hostId,
-            fromPath: selected.path,
-            toId: toEp.hostId,
-            toPath,
-          }),
-        });
-        setTransferProgress(true, `(${i + 1}/${list.length}) 完成 ${selected.name}`, (i + 1) / list.length);
-      }
+      const payload = list.map((f) => ({
+        fromPath: f.path,
+        toPath: joinPath(panePath(toSide), f.name),
+      }));
+      await apiNdjson(
+        "/api/transfer/relay-batch",
+        { fromId: fromEp.hostId, toId: toEp.hostId, files: payload },
+        onProgress
+      );
     }
     const ms = Date.now() - started;
+    const concHint = lastConc ? ` · ${lastConc} 路并发` : "";
     setTransferProgress(
       true,
-      `完成 ${list.length} 个文件（${Math.max(1, Math.round(ms / 1000))}s）`,
+      `完成（${Math.max(1, Math.round(ms / 1000))}s）${concHint}`,
       1
     );
     await refreshPane(toSide);
     setTimeout(() => setTransferProgress(false, "", 0), 1400);
   } catch (err) {
     setTransferProgress(true, `失败：${err.message}`, 1);
-    alert(err.message || String(err));
+    showAlert({ title: "传输失败", message: err.message || String(err) });
   } finally {
     state.transferBusy = false;
   }
@@ -1765,18 +2042,228 @@ function askConfirm({ title = "确认", message = "", okText = "确定" } = {}) 
   });
 }
 
+/** 生成不冲突的另存名：a.txt → a2.txt → a3.txt；folder → folder2 */
+function uniqueSaveName(name, taken) {
+  const set = taken instanceof Set ? taken : new Set(taken || []);
+  if (!set.has(name)) return name;
+  const dot = name.lastIndexOf(".");
+  const hasExt = dot > 0 && dot < name.length - 1 && !name.endsWith(".");
+  const base = hasExt ? name.slice(0, dot) : name;
+  const ext = hasExt ? name.slice(dot) : "";
+  let n = 2;
+  let candidate = `${base}${n}${ext}`;
+  while (set.has(candidate)) {
+    n += 1;
+    candidate = `${base}${n}${ext}`;
+  }
+  return candidate;
+}
+
+/**
+ * 同名冲突弹窗
+ * @returns {Promise<'replace'|'rename'|'cancel'>}
+ */
+function askConflict({ conflicts = [] } = {}) {
+  return new Promise((resolve) => {
+    const dlg = $("app-conflict");
+    if (!dlg) {
+      resolve("cancel");
+      return;
+    }
+    const listEl = $("app-conflict-list");
+    const hint = $("app-conflict-hint");
+    const renameBtn = $("app-conflict-rename");
+    $("app-conflict-title").textContent = "同名冲突";
+    $("app-conflict-message").textContent =
+      conflicts.length === 1
+        ? `目标位置已有「${conflicts[0].name}」，请选择处理方式：`
+        : `目标位置已有 ${conflicts.length} 个同名项，请选择处理方式：`;
+    if (listEl) {
+      listEl.innerHTML = conflicts
+        .slice(0, 12)
+        .map(
+          (c) =>
+            `<li><span class="conflict-name" title="${escapeHtml(c.name)}">${escapeHtml(c.name)}${
+              c.type === "dir" ? " /" : ""
+            }</span><span class="conflict-saveas">→ ${escapeHtml(c.saveAs)}</span></li>`
+        )
+        .join("");
+      if (conflicts.length > 12) {
+        listEl.innerHTML += `<li><span class="conflict-name">…还有 ${conflicts.length - 12} 项</span><span></span></li>`;
+      }
+    }
+    if (hint) {
+      hint.textContent =
+        "替换：覆盖同名内容（文件夹会先删再传）。另存为序号：自动改名如 a2.txt / folder2。取消：中止本次传输。";
+    }
+    if (renameBtn) {
+      const sample = conflicts[0]?.saveAs || "name2";
+      renameBtn.textContent =
+        conflicts.length === 1 ? `另存为 ${sample}` : `全部另存为序号`;
+    }
+    const onClose = () => {
+      dlg.removeEventListener("close", onClose);
+      const v = dlg.returnValue;
+      if (v === "replace" || v === "rename") resolve(v);
+      else resolve("cancel");
+    };
+    dlg.addEventListener("close", onClose);
+    if (typeof dlg.showModal === "function") dlg.showModal();
+    else dlg.setAttribute("open", "");
+  });
+}
+
+async function deleteRemoteOrLocal(ep, entryOrPath, isDir) {
+  const pathName = typeof entryOrPath === "string" ? entryOrPath : entryOrPath.path;
+  const dir =
+    typeof isDir === "boolean"
+      ? isDir
+      : entryOrPath?.type === "dir";
+  if (ep.kind === "local") {
+    await api("/api/fs/delete", {
+      method: "POST",
+      body: JSON.stringify({ scope: "local", path: pathName }),
+    });
+    return;
+  }
+  if (!ep.hostId) throw new Error("请先选择主机");
+  await api("/api/fs/delete", {
+    method: "POST",
+    body: JSON.stringify({
+      scope: "remote",
+      id: ep.hostId,
+      path: pathName,
+      isDir: Boolean(dir),
+    }),
+  });
+}
+
+/**
+ * 传输前处理目标同名冲突
+ * @returns {Promise<{ action: 'proceed'|'replace'|'rename'|'cancel', items: any[], conflicts?: any[] }>}
+ */
+async function resolveTransferConflicts(toSide, items) {
+  const existingEntries = state.paneEntries[toSide] || [];
+  const existing = new Set(existingEntries.map((e) => e.name));
+  const conflictsRaw = items.filter((it) => it && existing.has(it.name));
+  if (!conflictsRaw.length) return { action: "proceed", items };
+
+  const taken = new Set(existing);
+  const conflicts = conflictsRaw.map((c) => {
+    const saveAs = uniqueSaveName(c.name, taken);
+    taken.add(saveAs);
+    const hit = existingEntries.find((e) => e.name === c.name);
+    return {
+      name: c.name,
+      type: c.type || hit?.type || "file",
+      saveAs,
+      existing: hit || null,
+    };
+  });
+
+  const choice = await askConflict({ conflicts });
+  if (choice === "cancel") return { action: "cancel", items };
+  if (choice === "rename") {
+    const map = new Map(conflicts.map((c) => [c.name, c.saveAs]));
+    return {
+      action: "rename",
+      items: items.map((it) => (map.has(it.name) ? { ...it, name: map.get(it.name) } : it)),
+      conflicts,
+    };
+  }
+  return { action: "replace", items, conflicts };
+}
+
+let lastAlertKey = "";
+let lastAlertAt = 0;
+
+function showAlert({ title = "提示", message = "" } = {}) {
+  const key = `${title}\n${message}`;
+  const now = Date.now();
+  if (key === lastAlertKey && now - lastAlertAt < 1600) {
+    return Promise.resolve();
+  }
+  lastAlertKey = key;
+  lastAlertAt = now;
+  return new Promise((resolve) => {
+    const dlg = $("app-alert");
+    if (!dlg) {
+      try {
+        window.alert(message || title);
+      } catch {
+        /* ignore */
+      }
+      resolve();
+      return;
+    }
+    $("app-alert-title").textContent = title;
+    $("app-alert-message").textContent = message || "";
+    const onClose = () => {
+      dlg.removeEventListener("close", onClose);
+      resolve();
+    };
+    dlg.addEventListener("close", onClose);
+    if (typeof dlg.showModal === "function") dlg.showModal();
+    else dlg.setAttribute("open", "");
+  });
+}
+
+function formatConnectError(raw, host) {
+  const detail = String(raw || "连接失败").trim() || "连接失败";
+  const lower = detail.toLowerCase();
+  let reason = detail;
+  if (/timed?\s*out|timeout|etimedout|connect timeout|handshake timed out/i.test(detail)) {
+    reason = "连接超时：主机无响应。请检查地址、端口、安全组/防火墙，或稍后重试。";
+  } else if (/econnrefused|connection refused/i.test(detail)) {
+    reason = "连接被拒绝：目标端口没有 SSH 服务，或被防火墙拦截。";
+  } else if (/enotfound|getaddrinfo|err_name_not_resolved/i.test(detail)) {
+    reason = "无法解析主机名：请检查主机地址是否填写正确。";
+  } else if (/ehostunreach|enetunreach|network is unreachable/i.test(detail)) {
+    reason = "网络不可达：请检查本机网络或路由。";
+  } else if (
+    /authentication|auth fail|permission denied|all configured authentication methods failed|invalid password|no more authentication/i.test(
+      detail
+    )
+  ) {
+    reason = "认证失败：请检查用户名、密码、私钥路径或口令。";
+  } else if (/private key not found|no such file/i.test(detail)) {
+    reason = "私钥文件不存在：请检查私钥路径。";
+  } else if (/websocket|ws connection|连接失败/i.test(detail) && /连接失败|websocket/i.test(lower)) {
+    reason = detail === "连接失败" ? "无法建立连接：请确认 UI 服务仍在运行，然后重试。" : detail;
+  }
+  const who = host
+    ? `${host.name || host.id}\n${host.username}@${host.host}:${host.port || 22}`
+    : "";
+  if (who && reason !== detail) return `${who}\n\n${reason}\n\n详情：${detail}`;
+  if (who) return `${who}\n\n${reason}`;
+  return reason !== detail ? `${reason}\n\n详情：${detail}` : reason;
+}
+
+function notifyConnectFailure(id, rawMessage) {
+  const host = state.hosts.find((h) => h.id === id);
+  const message = formatConnectError(rawMessage, host);
+  applySessionStatus(id, "error", String(rawMessage || "连接失败"));
+  // 只在工作台弹窗；主机列表只更新状态，避免双开 iframe 各弹一次
+  if (state.panel !== "hosts") {
+    showAlert({ title: "连接失败", message });
+  }
+}
+
 function showContextMenu(x, y) {
   const menu = $("file-context-menu");
   if (!menu) return;
   const entry = state.ctx.entry;
   const hasEntry = Boolean(entry);
-  const isFile = entry?.type === "file";
+  const selected = selectedEntries(state.ctx.side || "left");
+  const canCopy =
+    (entry && (entry.type === "file" || entry.type === "dir")) ||
+    selected.some((e) => e && (e.type === "file" || e.type === "dir"));
   menu.querySelectorAll("[data-ctx]").forEach((btn) => {
     const act = btn.getAttribute("data-ctx");
     let enabled = true;
     if (act === "rename" || act === "chmod") enabled = hasEntry;
-    if (act === "delete") enabled = hasEntry || selectedEntries(state.ctx.side || "left").length > 0;
-    if (act === "copy") enabled = isFile || selectedEntries(state.ctx.side || "left").some((e) => e.type === "file");
+    if (act === "delete") enabled = hasEntry || selected.length > 0;
+    if (act === "copy") enabled = canCopy;
     btn.disabled = !enabled;
   });
   menu.classList.remove("hidden");
@@ -1844,39 +2331,34 @@ async function renameEntry(side, entry) {
 }
 
 async function deleteEntries(side, entries) {
-  const list = (entries || selectedEntries(side)).filter(Boolean);
+  const list = (entries || selectedEntries(side)).filter((e) => e && !e.isParent);
   if (!list.length) return;
   const ok = await askConfirm({
     title: "删除确认",
     message: `确定删除 ${list.length} 项？\n${list
       .slice(0, 5)
-      .map((e) => e.name)
-      .join("\n")}${list.length > 5 ? "\n…" : ""}\n此操作不可恢复。`,
+      .map((e) => `${e.name}${e.type === "dir" ? " /" : ""}`)
+      .join("\n")}${list.length > 5 ? "\n…" : ""}\n文件夹将递归删除，此操作不可恢复。`,
     okText: "删除",
   });
   if (!ok) return;
   const ep = state.endpoints[side];
+  const failures = [];
   for (const entry of list) {
-    if (ep.kind === "local") {
-      await api("/api/fs/delete", {
-        method: "POST",
-        body: JSON.stringify({ scope: "local", path: entry.path }),
-      });
-    } else {
-      if (!ep.hostId) throw new Error("请先选择主机");
-      await api("/api/fs/delete", {
-        method: "POST",
-        body: JSON.stringify({
-          scope: "remote",
-          id: ep.hostId,
-          path: entry.path,
-          isDir: entry.type === "dir",
-        }),
-      });
+    try {
+      await deleteRemoteOrLocal(ep, entry, entry.type === "dir");
+    } catch (err) {
+      failures.push(`${entry.name}：${err.message || String(err)}`);
     }
   }
   state.paneSelected[side] = [];
   await refreshPane(side);
+  if (failures.length) {
+    await showAlert({
+      title: failures.length === list.length ? "删除失败" : "部分删除失败",
+      message: failures.slice(0, 8).join("\n") + (failures.length > 8 ? `\n…共 ${failures.length} 项失败` : ""),
+    });
+  }
 }
 
 async function chmodEntry(side, entry) {
@@ -1910,9 +2392,13 @@ async function chmodEntry(side, entry) {
 
 async function selectHost(id, mode = "both", opts = {}) {
   const { fromBus = false } = opts;
-  state.activeId = id;
   const sess = ensureSession(id);
+  const alreadyLive = isTerminalLive(sess) || sessionLooksActive(id);
 
+  state.activeId = id;
+
+  // 切换布局时退出全屏态；文件/终端互切只改布局，不断开会话
+  state.layout.maximized = null;
   if (mode === "sftp") {
     state.layout.sftp = true;
     state.layout.term = false;
@@ -1922,19 +2408,40 @@ async function selectHost(id, mode = "both", opts = {}) {
   } else {
     state.layout.sftp = true;
     state.layout.term = true;
+    state.layout.stack = "sftp-top";
+    saveStackPref();
+  }
+
+  // 仅在尚未持有会话时进入「连接中」；已连接/连接中不闪状态
+  if (!fromBus && !alreadyLive) {
+    applySessionStatus(id, "connecting", "");
   }
 
   if (!fromBus) {
     publish({ type: "selectHost", id, mode });
   }
 
-  // 主机侧栏只负责选主机，不渲染工作区
+  // 主机侧栏：广播布局 + 确保工作台可见（已打开则不重载）
   if (state.panel === "hosts") {
     renderHosts();
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(
+          {
+            source: "cursor-ssh-mcp-ui",
+            type: "openWorkbench",
+            id,
+            mode,
+          },
+          "*"
+        );
+      }
+    } catch {
+      /* ignore */
+    }
     return;
   }
 
-  // 从主机列表点「文件/默认」时：右侧切到该主机，左侧默认保持本地（可再改成另一台主机）
   if (mode === "sftp" || mode === "both") {
     state.endpoints.right = { kind: "host", hostId: id };
     if (sameEndpoint(state.endpoints.left, state.endpoints.right)) {
@@ -1951,17 +2458,16 @@ async function selectHost(id, mode = "both", opts = {}) {
 
   $("remote-path").value = sess.remotePath || ".";
 
+  // 文件面板：复用服务端 keepalive；已在线时仍刷新列表，但不改连接态
   if (state.layout.sftp) {
     await refreshPane("left");
     await refreshPane("right");
   }
+  // 终端：已连接则复用 WebSocket / xterm，隐藏面板也不会关掉
   if (state.layout.term) {
-    if (sess.term || mode === "term") {
-      connectTerminal(id);
-    } else {
-      updateTermStatus(sess);
-      $("term-placeholder").classList.toggle("hidden", Boolean(sess.term));
-    }
+    connectTerminal(id);
+  } else if (alreadyLive && state.activeId === id) {
+    updateTermStatus(sess);
   }
 }
 
@@ -2020,28 +2526,46 @@ function setupDialog() {
 function setupPanelControls() {
   $("btn-close-sftp").addEventListener("click", () => {
     if (!state.layout.term) return;
+    state.layout.maximized = null;
     state.layout.sftp = false;
     updateLayoutChrome();
   });
   $("btn-close-term").addEventListener("click", () => {
     if (!state.layout.sftp) return;
+    state.layout.maximized = null;
     state.layout.term = false;
+    // 只隐藏终端面板，保持 WebSocket / 会话
     updateLayoutChrome();
   });
   $("btn-show-sftp").addEventListener("click", () => {
+    state.layout.maximized = null;
     state.layout.sftp = true;
     updateLayoutChrome();
     if (state.activeId) refreshRemote();
   });
   $("btn-show-term").addEventListener("click", () => {
+    state.layout.maximized = null;
     state.layout.term = true;
     updateLayoutChrome();
     if (state.activeId) {
       showTerminalMount(state.activeId);
-      const sess = ensureSession(state.activeId);
-      if (sess.term || sess.status === "online") connectTerminal(state.activeId);
+      connectTerminal(state.activeId);
       fitActiveTerminal();
     }
+  });
+  $("term-status")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!state.activeId) {
+      showAlert({ title: "未选择主机", message: "请先在左侧主机列表选择一台主机。" });
+      return;
+    }
+    toggleHostSession(state.activeId);
+  });
+  $("btn-max-sftp")?.addEventListener("click", () => maximizePane("sftp"));
+  $("btn-max-term")?.addEventListener("click", () => maximizePane("term"));
+  $("btn-swap-panes")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    swapPaneStack();
   });
   $("btn-term-clear").addEventListener("click", () => {
     const sess = state.activeId ? state.sessions[state.activeId] : null;
@@ -2053,10 +2577,13 @@ function setupPanelControls() {
   let startY = 0;
   let startH = 0;
   handle.addEventListener("mousedown", (e) => {
+    if (e.target.closest("#btn-swap-panes")) return;
     startY = e.clientY;
     startH = pane.getBoundingClientRect().height;
+    const termOnTop = state.layout.stack === "term-top";
     const onMove = (ev) => {
-      const dy = startY - ev.clientY;
+      // 终端在下：向上拖增大；终端在上：向下拖增大
+      const dy = termOnTop ? ev.clientY - startY : startY - ev.clientY;
       const next = Math.max(120, Math.min(window.innerHeight * 0.75, startH + dy));
       state.layout.termHeight = next;
       pane.style.height = `${next}px`;
@@ -2283,7 +2810,7 @@ function setupTransfers() {
       }
       if (act === "copy") {
         const other = side === "left" ? "right" : "left";
-        const files = (entry ? [entry] : selectedEntries(side)).filter((x) => x.type === "file");
+        const files = transferrableEntries(entry ? [entry] : selectedEntries(side));
         await transferFiles(side, other, files);
         await refreshPane(side);
         await refreshPane(other);
@@ -2363,17 +2890,43 @@ function setupNav() {
   $("remote-up").addEventListener("click", () => upPane("right"));
 }
 
+function handleBusMessage(msg) {
+  if (!msg || typeof msg !== "object") return;
+  if (msg.type === "selectHost" && msg.id && state.panel !== "hosts") {
+    selectHost(msg.id, msg.mode || "both", { fromBus: true });
+  }
+  if (msg.type === "hostsChanged") {
+    refreshHosts();
+  }
+  if (msg.type === "sessionStatus" && msg.id && msg.status) {
+    applySessionStatus(msg.id, msg.status, msg.error || "", { fromBus: true });
+  }
+  if (msg.type === "disconnectHost" && msg.id) {
+    disconnectHost(msg.id, { fromBus: true });
+  }
+}
+
 function setupBus() {
-  if (!bus) return;
-  bus.onmessage = (ev) => {
-    const msg = ev.data || {};
-    if (msg.type === "selectHost" && msg.id && state.panel !== "hosts") {
-      selectHost(msg.id, msg.mode || "both", { fromBus: true });
+  if (bus) {
+    bus.onmessage = (ev) => handleBusMessage(ev.data || {});
+  }
+  // 部分 webview 下 BroadcastChannel 不可靠，用 localStorage 兜底
+  window.addEventListener("storage", (ev) => {
+    if (ev.key === STORE_KEY && ev.newValue) {
+      try {
+        handleBusMessage(JSON.parse(ev.newValue));
+      } catch {
+        /* ignore */
+      }
     }
-    if (msg.type === "hostsChanged") {
-      refreshHosts();
+    if (ev.key === STATUS_KEY && ev.newValue) {
+      loadPersistedSessionStatuses();
+      renderHosts();
+      if (state.activeId && state.panel !== "hosts") {
+        updateTermStatus(ensureSession(state.activeId));
+      }
     }
-  };
+  });
 }
 
 async function copyText(text) {

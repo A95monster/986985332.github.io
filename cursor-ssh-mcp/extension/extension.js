@@ -142,7 +142,7 @@ function frameHtml(src) {
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; frame-src ${src} http://127.0.0.1:* http://localhost:* https:; style-src 'unsafe-inline';" />
+        content="default-src 'none'; frame-src ${src} http://127.0.0.1:* http://localhost:* https:; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
   <style>
     html, body, iframe { margin:0; padding:0; width:100%; height:100%; border:0; background:#eef6f4; }
     body { overflow:hidden; }
@@ -150,6 +150,16 @@ function frameHtml(src) {
 </head>
 <body>
   <iframe src="${src}" title="SSH" allow="clipboard-read; clipboard-write"></iframe>
+  <script>
+    (function () {
+      const vscode = acquireVsCodeApi();
+      window.addEventListener("message", function (event) {
+        const data = event.data;
+        if (!data || data.source !== "cursor-ssh-mcp-ui") return;
+        vscode.postMessage(data);
+      });
+    })();
+  </script>
 </body>
 </html>`;
 }
@@ -176,6 +186,19 @@ class SshHostsViewProvider {
       ],
     };
     webviewView.webview.html = loadingHtml("正在加载主机列表…");
+    webviewView.webview.onDidReceiveMessage(async (msg) => {
+      if (!msg || msg.source !== "cursor-ssh-mcp-ui") return;
+      // 主机侧栏点「文件 / 终端 / 默认」时，若工作台已关闭则重新打开
+      if (msg.type === "openWorkbench" || msg.type === "selectHost") {
+        try {
+          await openWorkbench(this.context, { preserveFocus: false });
+        } catch (err) {
+          getOutput().appendLine(
+            `openWorkbench failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      }
+    });
     this.refresh()
       .then(() => openWorkbench(this.context, { preserveFocus: true }))
       .catch((err) => {
@@ -196,12 +219,16 @@ class SshHostsViewProvider {
 
 /**
  * @param {vscode.ExtensionContext} context
- * @param {{ preserveFocus?: boolean }} [opts]
+ * @param {{ preserveFocus?: boolean, forceReload?: boolean }} [opts]
  */
 async function openWorkbench(context, opts = {}) {
   const preserveFocus = Boolean(opts.preserveFocus);
+  const forceReload = Boolean(opts.forceReload);
+
+  // 已打开时只前置，不重载 iframe——否则终端 WebSocket / 会话会被打断
   if (workbenchPanel) {
     workbenchPanel.reveal(vscode.ViewColumn.One, preserveFocus);
+    if (!forceReload) return workbenchPanel;
     try {
       const src = await resolveExternalUiUrl(context, "work");
       workbenchPanel.webview.html = frameHtml(src);
@@ -258,10 +285,14 @@ function activate(context) {
     })
   );
 
+  const openWorkbenchCmd = async () => {
+    await openWorkbench(context, { preserveFocus: false });
+  };
   context.subscriptions.push(
-    vscode.commands.registerCommand("cursorSshMcp.openWorkbench", async () => {
-      await openWorkbench(context, { preserveFocus: false });
-    })
+    vscode.commands.registerCommand("cursorSshMcp.openWorkbench", openWorkbenchCmd)
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand("cursorSshMcp.openEditor", openWorkbenchCmd)
   );
 
   context.subscriptions.push(
@@ -285,7 +316,7 @@ function activate(context) {
       }
       await provider.refresh();
       if (workbenchPanel) {
-        await openWorkbench(context, { preserveFocus: true });
+        await openWorkbench(context, { preserveFocus: true, forceReload: true });
       }
       vscode.window.showInformationMessage("SSH UI server restarted");
     })

@@ -45,6 +45,7 @@
             <div class="panel-actions">
               <button type="button" id="btn-show-term" class="btn btn-ghost btn-compact hidden">显示终端</button>
               <button type="button" id="btn-close-sftp" class="btn btn-ghost btn-compact" title="关闭文件面板">关闭</button>
+              <button type="button" id="btn-max-sftp" class="btn btn-ghost btn-compact" title="文件面板铺满（隐藏终端）">全屏</button>
             </div>
           </div>
           <div class="sftp-options">
@@ -182,20 +183,50 @@
           </form>
         </dialog>
 
-        <div id="panel-resize" title="拖动调整面板高度"></div>
+        <dialog id="app-alert" class="app-modal">
+          <form method="dialog" id="app-alert-form" class="app-modal-form">
+            <h3 id="app-alert-title">提示</h3>
+            <p id="app-alert-message" class="app-modal-msg"></p>
+            <div class="dialog-actions-right app-modal-actions">
+              <button type="submit" value="ok" class="btn btn-primary" id="app-alert-ok">知道了</button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog id="app-conflict" class="app-modal app-modal-wide">
+          <form method="dialog" id="app-conflict-form" class="app-modal-form">
+            <h3 id="app-conflict-title">同名冲突</h3>
+            <p id="app-conflict-message" class="app-modal-msg"></p>
+            <ul id="app-conflict-list" class="conflict-list"></ul>
+            <p id="app-conflict-hint" class="app-modal-hint"></p>
+            <div class="dialog-actions-right app-modal-actions conflict-actions">
+              <button type="submit" value="replace" class="btn btn-danger" id="app-conflict-replace">替换</button>
+              <button type="submit" value="rename" class="btn btn-primary" id="app-conflict-rename">另存为序号</button>
+              <button type="submit" value="cancel" class="btn btn-ghost" id="app-conflict-cancel">取消</button>
+            </div>
+          </form>
+        </dialog>
+
+        <div id="panel-resize" title="拖动调整面板高度">
+          <button type="button" id="btn-swap-panes" class="btn-swap-panes" title="上下互换文件与终端位置">上下互换</button>
+        </div>
 
         <section id="term-pane" class="panel-card term">
           <div class="panel-toolbar term-header">
             <div class="panel-title-wrap">
               <span class="panel-dot term"></span>
               <strong id="term-title">终端</strong>
-              <span id="term-status" class="status-pill idle">未连接</span>
+              <button type="button" id="term-status" class="status-pill status-btn idle" title="点击连接">
+                <span class="status-label">未连接</span>
+                <span class="status-action" aria-hidden="true">连接</span>
+              </button>
             </div>
             <div class="panel-actions">
               <button type="button" id="btn-show-sftp" class="btn btn-ghost btn-compact hidden">显示文件</button>
               <button type="button" id="btn-toggle-util" class="btn btn-ghost btn-compact" title="显示/隐藏工具栏">工具</button>
               <button type="button" id="btn-term-clear" class="btn btn-ghost btn-compact">清屏</button>
               <button type="button" id="btn-close-term" class="btn btn-ghost btn-compact" title="关闭终端面板">关闭</button>
+              <button type="button" id="btn-max-term" class="btn btn-ghost btn-compact" title="终端面板铺满（隐藏文件）">全屏</button>
             </div>
           </div>
           <div id="terminal-stack"></div>
